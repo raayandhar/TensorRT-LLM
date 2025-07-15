@@ -873,7 +873,7 @@ BlockPtr WindowBlockManager::getFreeBlock(executor::RetentionPriority priority,
         mEvictionPolicy->claimBlock(block);
         // Offload block in primary memory before repurposing
         auto offloadBlock = std::get<0>(mEvictionPolicy->getFreeBlock(kSecondaryLevel));
-        mTransferManager->offload(block, offloadBlock, mPools, 0, mode, directory);
+        mTransferManager->offload(block, offloadBlock, mPools, 0, mode, directory, 0, mode, directory);
         // swap linear block offsets (i.e. make block the offload block)
         block->swapMemoryPoolBlockOffset(offloadBlock);
 
