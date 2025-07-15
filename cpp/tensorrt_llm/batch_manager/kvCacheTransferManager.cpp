@@ -112,7 +112,7 @@ tr::ITensor::SharedPtr KVCacheTransferManager::computeBlockPointer(
 
 void KVCacheTransferManager::copyBlock(BlockPtr const& src, BlockPtr const& dst,
     std::vector<KVCacheBlockPool> const& pools, bool isOffload, int numTokensToCopy, executor::KvCacheTransferMode mode,
-    std::optional<std::string> directory)
+    std::optional<std::string> const& directory)
 {
     TLLM_LOG_DEBUG("copyBlock entered: srcId=%d, dstId=%d, isOffload=%s, mode=%d", src->getBlockId(), dst->getBlockId(),
         (isOffload ? "true" : "false"), static_cast<int>(mode));
@@ -203,7 +203,7 @@ void KVCacheTransferManager::copyBlock(BlockPtr const& src, BlockPtr const& dst,
 
 void KVCacheTransferManager::onboard(BlockPtr const& offloadBlock, BlockPtr const& block,
     std::vector<KVCacheBlockPool> const& pools, int numTokensToCopy, executor::KvCacheTransferMode mode,
-    std::optional<std::string> directory)
+    std::optional<std::string> const& directory)
 {
     if (mode != executor::KvCacheTransferMode::DRAM
         && mPendingOffloads.find(offloadBlock->getBlockId()) == mPendingOffloads.end())
@@ -222,7 +222,7 @@ void KVCacheTransferManager::onboard(BlockPtr const& offloadBlock, BlockPtr cons
 
 void KVCacheTransferManager::offload(BlockPtr const& block, BlockPtr const& offloadBlock,
     std::vector<KVCacheBlockPool> const& pools, int numTokensToCopy, executor::KvCacheTransferMode mode,
-    std::optional<std::string> directory)
+    std::optional<std::string> const& directory)
 {
     mPendingOffloads[block->getBlockId()] = tr::CudaEvent();
     copyBlock(block, offloadBlock, pools, true, numTokensToCopy, mode, directory);
