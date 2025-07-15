@@ -173,8 +173,8 @@ void KVCacheTransferManager::copyBlock(BlockPtr const& src, BlockPtr const& dst,
         auto ptr = isOffload ? computeBlockPointer(src, pools, poolIdx) : computeBlockPointer(dst, pools, poolIdx);
         auto block_id = src->getBlockId();
 
-        TLLM_CHECK_WITH_INFO(
-            directory.has_value(), "Expected a directory path for KVCache offload, but none was provided.");
+        TLLM_CHECK_WITH_INFO(directory.has_value() && directory.value() != "",
+            "Expected a directory path for KVCache offload, but none was provided.");
 
         int size = std::snprintf(nullptr, 0, "%s/block_%d_pool_%zu.bin", directory.value().c_str(), block_id, poolIdx);
 
