@@ -20,6 +20,7 @@
 #include "tensorrt_llm/runtime/cudaEvent.h"
 
 namespace tr = tensorrt_llm::runtime;
+namespace kvc = tensorrt_llm::executor::kv_cache;
 
 #pragma once
 
@@ -32,7 +33,8 @@ namespace tensorrt_llm::batch_manager::kv_cache_manager
 class KVCacheTransferManager
 {
 public:
-    explicit KVCacheTransferManager(tr::BufferManager const& bufferManager, BaseLoopbackAgent* loopbackAgent = nullptr);
+    explicit KVCacheTransferManager(
+        tr::BufferManager const& bufferManager, kvc::BaseLoopbackAgent* loopbackAgent = nullptr);
 
     //! \brief Onboard a block to gpu memory.
     void onboard(BlockPtr const& offloadBlock, BlockPtr const& block, std::vector<KVCacheBlockPool> const& pools,
@@ -76,7 +78,7 @@ private:
     // Track the block ids offloaded in this iteration.
     std::unordered_map<int32_t, tr::CudaEvent> mPendingOffloads;
     // Reference to parent loopback agent
-    BaseLoopbackAgent* mLoopbackAgent;
+    kvc::BaseLoopbackAgent* mLoopbackAgent;
     int mDeviceId;
 };
 
