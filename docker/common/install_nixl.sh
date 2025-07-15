@@ -32,7 +32,7 @@ meson setup builddir \
     -Dcudapath_inc="$CUDA_PATH/include" \
     -Dgds_path="$GDS_PATH" \
     -Dinstall_headers=true \
-    -Dstatic_plugins=UCX
+    -Dstatic_plugins=UCX,GDS
 
 cd builddir && ninja install
 cd ../..
