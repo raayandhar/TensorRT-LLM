@@ -370,6 +370,9 @@ class GenerationExecutorWorker(GenerationExecutor):
             uids=[str(prompt_adapter_request.adapter_id)])
 
     def _enqueue_request(self, request: GenerationRequest) -> int:
+        logger.debug(f"[trace - worker.py] _enqueue_request() called with request id: {request.id}")
+        logger.debug(f"[trace - worker.py] _enqueue_request() request.disaggregated_params: {request.disaggregated_params}")
+
         assert request.id is not None
         if self._lora_manager is not None and request.lora_request is not None:
             adapter_in_cache = self._lora_manager.is_adapter_in_cpu_cache(
@@ -421,10 +424,19 @@ class GenerationExecutorWorker(GenerationExecutor):
                 not self._is_pytorch_backend
                 or self.engine.kv_cache_transceiver is not None
             ), "kv_cache_transceiver is disabled, please set 'cache_transceiver_config: backend:<backend_type>` in config file for disaggregated serving"
+            logger.debug(f"[trace - worker.py] request.disaggregated_params: {request.disaggregated_params}")
+            logger.debug(f"[trace - worker.py] Getting request type from disaggregated_params...")
             request_type = request.disaggregated_params.get_request_type()
             if request_type == tllm.RequestType.REQUEST_TYPE_GENERATION_ONLY:
+                logger.debug(f"[trace - worker.py] This is a generation_only request, getting context_phase_params...")
+                logger.debug(f"[trace - worker.py] Before calling get_context_phase_params:")
+                logger.debug(f"[trace - worker.py]   disaggregated_params.first_gen_tokens: {request.disaggregated_params.first_gen_tokens}")
+                logger.debug(f"[trace - worker.py]   disaggregated_params.ctx_request_id: {request.disaggregated_params.ctx_request_id}")
+                logger.debug(f"[trace - worker.py]   disaggregated_params.opaque_state: {request.disaggregated_params.opaque_state}")
+                logger.debug(f"[trace - worker.py]   disaggregated_params.draft_tokens: {request.disaggregated_params.draft_tokens}")
                 context_phase_params = request.disaggregated_params.get_context_phase_params(
                 )
+                logger.debug(f"[trace - worker.py] context_phase_params created successfully: {context_phase_params}")
 
         is_overlap_enabled = self._is_pytorch_backend and not self._executor_config.pytorch_backend_config.disable_overlap_scheduler
         if is_overlap_enabled:
@@ -522,6 +534,8 @@ class GenerationExecutorWorker(GenerationExecutor):
     def submit(self, request: GenerationRequest) -> GenerationResult:
         """ Low-level API to the executor. Return a "future" GenerationResult which can be waited. """
         self.start()
+        logger.debug(f"[trace - worker.py] submit() called with request id: {request.id}")
+        logger.debug(f"[trace - worker.py] submit() request.disaggregated_params: {request.disaggregated_params}")
 
         if self.rank != 0:
             raise RuntimeError(
@@ -544,8 +558,9 @@ class GenerationExecutorWorker(GenerationExecutor):
             logprob_params=logprob_params)
 
         self._results[client_id] = result
-
+        logger.debug(f"[trace - worker.py] submit() result: {result}")
         request_id = self._enqueue_request(request)
+        logger.debug(f"[trace - worker.py] submit() request_id: {request_id}")
         # request_id returned from backend is necessary for the abort_request method.
         self._client_id_to_request_id[client_id] = request_id
 
@@ -786,8 +801,19 @@ def worker_main(
                     if isinstance(req, CancellingRequest):
                         worker.abort_request(req.id)
                     elif isinstance(req, GenerationRequest):
+                        logger.debug(f"[trace - worker.py] Received GenerationRequest with id: {req.id}")
+                        logger.debug(f"[trace - worker.py] Request.disaggregated_params: {req.disaggregated_params}")
+                        if req.disaggregated_params is not None:
+                            logger.debug(f"[trace - worker.py] Full disaggregated_params details:")
+                            logger.debug(f"[trace - worker.py]   request_type: {req.disaggregated_params.request_type}")
+                            logger.debug(f"[trace - worker.py]   first_gen_tokens: {req.disaggregated_params.first_gen_tokens}")
+                            logger.debug(f"[trace - worker.py]   ctx_request_id: {req.disaggregated_params.ctx_request_id}")
+                            logger.debug(f"[trace - worker.py]   opaque_state: {req.disaggregated_params.opaque_state}")
+                            logger.debug(f"[trace - worker.py]   draft_tokens: {req.disaggregated_params.draft_tokens}")                                               
                         try:
+                            logger.debug(f"[trace - worker.py] About to submit request to worker...")
                             worker.submit(req)
+                            logger.debug(f"[trace - worker.py] Request submitted successfully")                            
                         except RequestError as e:
                             logger.error(f"submit request failed: {e}")
                             worker._await_response_helper.temp_error_responses.put(

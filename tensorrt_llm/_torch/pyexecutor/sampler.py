@@ -15,7 +15,7 @@ from tensorrt_llm.bindings.executor import (DecodingConfig, DecodingMode,
                                             ExecutorConfig, FinishReason)
 from tensorrt_llm.bindings.internal.algorithms import CreateNewDecoderRequests
 from tensorrt_llm.bindings.internal.batch_manager import (
-    DecoderInputBuffers, add_new_tokens_to_requests, make_decoding_batch_input)
+    DecoderInputBuffers, LlmRequestType, add_new_tokens_to_requests, make_decoding_batch_input)
 from tensorrt_llm.bindings.internal.runtime import (BufferManager, CudaEvent,
                                                     DecoderState,
                                                     GptDecoderBatched)
@@ -84,9 +84,16 @@ class EarlyStopSampler(Sampler):
         scheduled_requests = state.scheduled_requests
         assert (not scheduled_requests.generation_requests)
         for idx, request in enumerate(scheduled_requests.context_requests):
-            request.state = LlmRequestState.GENERATION_COMPLETE
-            # NOTE: This is a hack: set finish reason manually and set the beam 0
-            request.set_finished_reason(FinishReason.LENGTH, 0)
+            # In disaggregated serving, context-only requests should NOT be marked as GENERATION_COMPLETE
+            # They should complete as context requests and trigger KV cache transfer to generation servers
+            if hasattr(request, 'llm_request_type') and request.llm_request_type == LlmRequestType.LLMREQUEST_TYPE_CONTEXT_ONLY:
+                # Don't set to GENERATION_COMPLETE - let context-only requests complete naturally
+                # They will be handled by disaggregated serving logic for KV cache transfer
+                pass
+            else:
+                request.state = LlmRequestState.GENERATION_COMPLETE
+                # NOTE: This is a hack: set finish reason manually and set the beam 0
+                request.set_finished_reason(FinishReason.LENGTH, 0)
             if request.py_return_context_logits:
                 logits = state.host.logits[idx]
                 if logits.ndim == 1:

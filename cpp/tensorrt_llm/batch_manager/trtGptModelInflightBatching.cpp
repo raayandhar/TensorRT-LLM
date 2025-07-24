@@ -902,6 +902,23 @@ void TrtGptModelInflightBatching::forwardSync()
             // If a context-only request is finished, send its KV cache and mark it.
             if (llmReq->isContextOnlyRequest() && llmReq->isContextFinished())
             {
+                TLLM_LOG_DEBUG("[trtGptModelInflightBatching.cpp trace] [RANK %d] Handling finished context-only request %lu", 
+                    COMM_SESSION.getRank(), llmReq->mRequestId);
+                TLLM_LOG_DEBUG("[trtGptModelInflightBatching.cpp trace] [RANK %d]   - State: %d", 
+                    COMM_SESSION.getRank(), static_cast<int>(llmReq->mState));
+                TLLM_LOG_DEBUG("[trtGptModelInflightBatching.cpp trace] [RANK %d]   - BeamWidth: %d", 
+                    COMM_SESSION.getRank(), llmReq->mSamplingConfig.beamWidth);
+                for (int beam = 0; beam < llmReq->mSamplingConfig.beamWidth; ++beam)
+                {
+                    TLLM_LOG_DEBUG("[trtGptModelInflightBatching.cpp trace] [RANK %d]   - Beam %d token count: %zu", 
+                        COMM_SESSION.getRank(), beam, llmReq->getTokens(beam).size());
+                    if (!llmReq->getTokens(beam).empty())
+                    {
+                        TLLM_LOG_DEBUG("[trtGptModelInflightBatching.cpp trace] [RANK %d]   - Beam %d last token: %d", 
+                            COMM_SESSION.getRank(), beam, llmReq->getTokens(beam).back());
+                    }
+                }
+                                
                 // TODO: skip if sending layer-wise
                 {
                     TLLM_CHECK_WITH_INFO(mCacheTransceiver,
@@ -2193,6 +2210,18 @@ void TrtGptModelInflightBatching::updateRequests(ScheduledRequests const& schedu
     auto const* const logProbsPtr = bufferCast<float const>(*decoderOutputBuffers.logProbsHost);
     auto const* const finishReasonsHostData
         = bufferCast<kernels::FinishedState>(*decoderOutputBuffers.finishReasonsHost);
+
+    // Debug: Check decoder output buffer contents
+    TLLM_LOG_DEBUG("[trtGptModelInflightBatching.cpp trace] [RANK %d PP_RANK %d] Decoder output buffers shape: [%d, %d, %d]",
+        COMM_SESSION.getRank(), mWorldConfig.getPipelineParallelRank(),
+        hostNewOutputTokensShape.d[0], hostNewOutputTokensShape.d[1], hostNewOutputTokensShape.d[2]);
+    
+    // Check first few tokens in the buffer for debugging
+    if (hostNewOutputTokensShape.d[0] > 0 && hostNewOutputTokensShape.d[1] > 0 && hostNewOutputTokensShape.d[2] > 0)
+    {
+        TLLM_LOG_DEBUG("[trtGptModelInflightBatching.cpp trace] [RANK %d PP_RANK %d] First token in newOutputTokens buffer: %d",
+            COMM_SESSION.getRank(), mWorldConfig.getPipelineParallelRank(), hostNewOutputTokensData[0]);
+    }
 
     // Update only requests that ran through the decoder
     for (auto const& llmReq : scheduledRequests.generationRequests)

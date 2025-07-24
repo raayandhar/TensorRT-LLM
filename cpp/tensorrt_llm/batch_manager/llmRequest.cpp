@@ -75,7 +75,7 @@ std::optional<executor::Result> LlmRequest::createResult(bool useFastLogits, int
         return std::nullopt;
     }
 
-    TLLM_LOG_DEBUG("Creating response for request %lu", mRequestId);
+    TLLM_LOG_DEBUG("[llmRequest.cpp trace] Creating response for request %lu", mRequestId);
 
     executor::Result result;
     result.sequenceIndex = mSequenceIndex;
@@ -92,10 +92,36 @@ std::optional<executor::Result> LlmRequest::createResult(bool useFastLogits, int
     {
         auto const reqBeamWidth = mSamplingConfig.beamWidth;
         std::vector<TokenIdType> firstGenTokens;
+        
+        TLLM_LOG_DEBUG("[llmRequest.cpp trace] Creating contextPhaseParams for request %lu", mRequestId);
+        TLLM_LOG_DEBUG("[llmRequest.cpp trace] Request state: %d, beamWidth: %d", static_cast<int>(mState), reqBeamWidth);
+        TLLM_LOG_DEBUG("[llmRequest.cpp trace] Number of token beams available: %zu", mTokens.size());
+        
         for (SizeType32 beam = 0; beam < reqBeamWidth; ++beam)
         {
-            firstGenTokens.push_back(getTokens().at(beam).back());
+            TLLM_LOG_DEBUG("[llmRequest.cpp trace] Processing beam %d", beam);
+            if (beam < mTokens.size())
+            {
+                TLLM_LOG_DEBUG("[llmRequest.cpp trace] Beam %d has %zu tokens", beam, getTokens(beam).size());
+                if (!getTokens(beam).empty())
+                {
+                    auto lastToken = getTokens().at(beam).back();
+                    TLLM_LOG_DEBUG("[llmRequest.cpp trace] Beam %d last token: %d", beam, lastToken);
+                    firstGenTokens.push_back(lastToken);
+                }
+                else
+                {
+                    TLLM_LOG_ERROR("[llmRequest.cpp trace] Beam %d has NO tokens!", beam);
+                }
+            }
+            else
+            {
+                TLLM_LOG_ERROR("[llmRequest.cpp trace] Beam %d is out of range (mTokens.size()=%zu)!", beam, mTokens.size());
+            }
         }
+        
+        TLLM_LOG_DEBUG("[llmRequest.cpp trace] Collected %zu firstGenTokens for request %lu", firstGenTokens.size(), mRequestId);
+        
         if (!hasDraftTokens())
         {
             result.contextPhaseParams = executor::ContextPhaseParams{
@@ -208,7 +234,7 @@ std::optional<executor::Result> LlmRequest::createResult(bool useFastLogits, int
         {
             for (auto const& outputTensor : outputTensorMap)
             {
-                TLLM_LOG_DEBUG("Adding tensor %s with shape %s to result.", outputTensor.first.c_str(),
+                TLLM_LOG_DEBUG("[llmRequest.cpp trace] Adding tensor %s with shape %s to result.", outputTensor.first.c_str(),
                     runtime::ITensor::toString(outputTensor.second->getShape()).c_str());
                 result.additionalOutputs.emplace_back(
                     prefix + outputTensor.first, executor::detail::ofITensor(outputTensor.second));

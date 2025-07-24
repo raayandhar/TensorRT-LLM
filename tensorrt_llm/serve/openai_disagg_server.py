@@ -190,6 +190,7 @@ class OpenAIDisaggServer:
         ctx_req.stream_options = None
 
         logger.debug("Sending request to ctx server: %s", ctx_server)
+        logger.debug(f"[trace - openai_disagg_server.py] ctx_req disagg params: {ctx_req.disaggregated_params}")
         try:
             if isinstance(ctx_req, ChatCompletionRequest):
                 ctx_response = await self.send_chat_request(ctx_server, ctx_req)
@@ -204,6 +205,13 @@ class OpenAIDisaggServer:
             raise ValueError("Disagg server returned more than one choice. This is currently not supported in disaggregated server.")
         if choices[0].disaggregated_params is None:
             raise ValueError("Context server did not return disaggregated params")
+
+        logger.debug("[trace - openai_disagg_server.py] Context response disaggregated_params: %s", choices[0].disaggregated_params)
+        logger.debug("[trace - openai_disagg_server.py] Context response first_gen_tokens: %s", getattr(choices[0].disaggregated_params, 'first_gen_tokens', 'N/A'))
+        logger.debug("[trace - openai_disagg_server.py] Context response ctx_request_id: %s", getattr(choices[0].disaggregated_params, 'ctx_request_id', 'N/A'))
+        logger.debug("[trace - openai_disagg_server.py] Context response opaque_state: %s", getattr(choices[0].disaggregated_params, 'opaque_state', 'N/A'))
+        logger.debug("[trace - openai_disagg_server.py] Context response finish_reason: %s", choices[0].finish_reason)
+        logger.debug("[trace - openai_disagg_server.py] Context response text: %s", choices[0].text[:100] if choices[0].text else 'None')
 
         return ctx_response
 
@@ -245,8 +253,17 @@ class OpenAIDisaggServer:
                     raise ValueError("Context server did not return a single choice. This is not expected")
 
                 # Append disaggregates parameters to generation request
+                logger.debug("[trace - openai_disagg_server.py] Before transferring to gen request:")
+                logger.debug("[trace - openai_disagg_server.py]   ctx_response.choices[0].disaggregated_params: %s", ctx_response.choices[0].disaggregated_params)
+                
                 req.disaggregated_params = ctx_response.choices[0].disaggregated_params
                 req.disaggregated_params.request_type = "generation_only"
+                
+                logger.debug("[trace - openai_disagg_server.py] After setting generation request disaggregated_params:")
+                logger.debug("[trace - openai_disagg_server.py]   req.disaggregated_params: %s", req.disaggregated_params)
+                logger.debug("[trace - openai_disagg_server.py]   first_gen_tokens: %s", getattr(req.disaggregated_params, 'first_gen_tokens', 'N/A'))
+                logger.debug("[trace - openai_disagg_server.py]   ctx_request_id: %s", getattr(req.disaggregated_params, 'ctx_request_id', 'N/A'))
+                logger.debug("[trace - openai_disagg_server.py]   opaque_state: %s", getattr(req.disaggregated_params, 'opaque_state', 'N/A')[:50] if getattr(req.disaggregated_params, 'opaque_state', None) else 'None')
 
                 # Replace the string prompt with prompt_tokens_ids
                 if isinstance(req, CompletionRequest):

@@ -218,6 +218,22 @@ def chat_response_post_processor(rsp: GenerationResultBase, args: ChatPostprocAr
             message = ChatMessage(
                 role=role, content=text, reasoning_content=reasoning_text)
         disaggregated_params = to_disaggregated_params(output.disaggregated_params)
+
+        # Debug logging to trace disaggregated params
+        from tensorrt_llm.logger import logger
+        if output.disaggregated_params:
+            logger.debug("[trace - postprocess_handlers.py] Output has disaggregated_params:")
+            logger.debug(f"[trace - postprocess_handlers.py]   request_type: {getattr(output.disaggregated_params, 'request_type', 'N/A')}")
+            logger.debug(f"[trace - postprocess_handlers.py]   first_gen_tokens: {getattr(output.disaggregated_params, 'first_gen_tokens', 'N/A')}")
+            logger.debug(f"[trace - postprocess_handlers.py]   ctx_request_id: {getattr(output.disaggregated_params, 'ctx_request_id', 'N/A')}")
+            opaque_state = getattr(output.disaggregated_params, 'opaque_state', None)
+            if opaque_state is not None:
+                logger.debug(f"[trace - postprocess_handlers.py]   opaque_state length: {len(opaque_state)}")
+            else:
+                logger.debug(f"[trace - postprocess_handlers.py]   opaque_state is None")
+        else:
+            logger.debug("[trace - postprocess_handlers.py] Output has NO disaggregated_params")
+
         choice = ChatCompletionResponseChoice(
             index=output.index,
             message=message,
@@ -329,6 +345,22 @@ def completion_response_post_processor(rsp: GenerationResult, args: CompletionPo
         if args.echo:
             text = args.prompt + text
         disaggregated_params = to_disaggregated_params(output.disaggregated_params)
+
+        # Debug logging to trace disaggregated params
+        from tensorrt_llm.logger import logger
+        if output.disaggregated_params:
+            logger.debug("[trace - postprocess_handlers.py] Completion output has disaggregated_params:")
+            logger.debug(f"[trace - postprocess_handlers.py]   request_type: {getattr(output.disaggregated_params, 'request_type', 'N/A')}")
+            logger.debug(f"[trace - postprocess_handlers.py]   first_gen_tokens: {getattr(output.disaggregated_params, 'first_gen_tokens', 'N/A')}")
+            logger.debug(f"[trace - postprocess_handlers.py]   ctx_request_id: {getattr(output.disaggregated_params, 'ctx_request_id', 'N/A')}")
+            opaque_state = getattr(output.disaggregated_params, 'opaque_state', None)
+            if opaque_state is not None:
+                logger.debug(f"[trace - postprocess_handlers.py]   opaque_state length: {len(opaque_state)}")
+            else:
+                logger.debug(f"[trace - postprocess_handlers.py]   opaque_state is None")
+        else:
+            logger.debug("[trace - postprocess_handlers.py] Completion output has NO disaggregated_params")
+
         choice = CompletionResponseChoice(
             text=text if args.detokenize else "",
             token_ids=None if args.detokenize else output.token_ids,

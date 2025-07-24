@@ -754,6 +754,9 @@ class PyExecutor:
                 if self.should_stop_processing:
                     break
 
+                if self.kv_cache_transceiver:
+                    self._check_disagg_gen_transfer_status()
+
                 if self.enable_iter_perf_stats:
                     iter_stats = self._get_init_iter_stats(
                         len(new_requests),
@@ -761,7 +764,20 @@ class PyExecutor:
 
                 self._pad_attention_dp_dummy_request()
 
-                scheduled_batch, _, _ = self._schedule()
+                scheduled_batch, fitting_disagg_gen_init_requests, num_fitting_reqs = self._schedule()
+
+                if self.kv_cache_transceiver:
+                    # For requests that are fitting disagg gen init, also prepare resources for KV cache manager
+                    self._prepare_disagg_gen_init(
+                        fitting_disagg_gen_init_requests)
+                    if num_fitting_reqs == 0 and not fitting_disagg_gen_init_requests:
+                        # So we are running into this. It's unlikely to be kvCache issue.
+                        # TODO: Go and trace this.
+                        logger.warning(
+                            "num_fitting_reqs=0 and fitting_disagg_gen_init_requests is empty, may not have enough kvCache"
+                        )
+                        self.kv_cache_transceiver.check_context_transfer_status(
+                            1)
 
                 self.num_scheduled_requests = scheduled_batch.batch_size
                 logger.debug(
@@ -777,14 +793,24 @@ class PyExecutor:
                 else:
                     can_queue = scheduled_batch.batch_size > 0
                     if not can_queue:
-                        assert len(self.inflight_req_ids) > 0, (
-                            "fail to schedule any pending request, probably run out of resource"
-                        )
+                        if self.kv_cache_transceiver:
+                            # In disagg mode, empty scheduled batch is fine
+                            pass
+                        else:
+                            assert len(self.inflight_req_ids) > 0, (
+                                "fail to schedule any pending request, probably run out of resource"
+                            )
 
                 if not can_queue:
                     self.micro_batches[microbatch_id] = None
                 else:
                     self._add_inflight_ids(scheduled_batch)
+
+                    if self.kv_cache_transceiver:
+                        # For generation requests which have completed KV cache transfer
+                        self._prepare_disagg_gen_transmission_complete(
+                            scheduled_batch)
+
                     self.resource_manager.prepare_resources(scheduled_batch)
 
                     # Stage 1: Async forward (all ranks) and decoding pass (last rank only)
@@ -793,8 +819,16 @@ class PyExecutor:
                             scheduled_batch)
                     else:
                         with torch.cuda.nvtx.range("_forward_step_last_pp"):
+                            if self.kv_cache_transceiver:
+                                # For generation requests which have completed KV cache transfer
+                                self._prepare_disagg_gen_transmission_complete(
+                                    scheduled_batch)
+                                
+                                # Return the first token to the client
+                                self._handle_first_token_response(scheduled_batch)
+
                             batch_outputs = self._forward_step(scheduled_batch)
-                            logits_host = None
+                            logits_host = None 
                             if self._need_return_logits(scheduled_batch):
                                 logits_host = batch_outputs["logits"].to(
                                     "cpu", non_blocking=True)
@@ -808,6 +842,11 @@ class PyExecutor:
                                 scheduled_batch, batch_outputs)
                             sample_state.host.logits = logits_host
                             self._update_request_states(scheduled_batch)
+                            
+                            # Send disagg context cache after forward step
+                            ctx_transmission_reqs = self._send_disagg_ctx_cache(
+                                scheduled_batch.context_requests
+                            ) if self.kv_cache_transceiver else []                            
 
                     if self.enable_iter_perf_stats:
                         iter_stats.inflight_batching_stats.num_ctx_tokens = self.model_engine.iter_states[
@@ -817,6 +856,7 @@ class PyExecutor:
                         iter_start_time=iter_start_time,
                         iter_stats=iter_stats,
                         microbatch_id=microbatch_id,
+                        ctx_transmission_reqs=ctx_transmission_reqs if self.dist.is_last_pp_rank and self.kv_cache_transceiver else None
                     )
 
                     self.micro_batches[microbatch_id] = batch_state
@@ -825,6 +865,10 @@ class PyExecutor:
                 # send/recv chain: (pp_size - 1) -> 0 -> 1 -> ... -> (pp_size - 2)
                 # last rank: sync sampler for previous microbatch to start new tokens comm chain.
                 # other ranks: send/recv tokens for next microbatch to allow overlap
+
+                # Note from Raayan:
+                # Are we correctly sending tokens to the other ranks on the context server?
+                # Context only requests seem to be missing. Rank 1 has them but Rank 0 does not.
                 offset = -1 if self.dist.is_last_pp_rank else 1
                 prev_microbatch_id = (microbatch_id +
                                       offset) % self.num_micro_batches
@@ -881,16 +925,31 @@ class PyExecutor:
                 if previous_batch is not None:
                     with torch.cuda.nvtx.range("_handle_previous_batch_pp"):
                         self._update_requests(previous_batch.sample_state)
+                        
+                        if self.kv_cache_transceiver and previous_batch.ctx_transmission_reqs:
+                            # For context only req in transmission, we reset the state since sampler might have changed it
+                            for req in previous_batch.ctx_transmission_reqs:
+                                req.state = LlmRequestState.DISAGG_CONTEXT_TRANS_IN_PROGRESS
+                        
                         self._handle_canceled_requests()
                         finished_requests = self._handle_responses()
                         previous_scheduled_batch = previous_batch.sample_state.scheduled_requests
                         self.resource_manager.update_resources(
                             previous_scheduled_batch)
                         self._remove_inflight_ids(previous_scheduled_batch)
+                        # Handle any context_only responses forwarded from last rank
+                        if hasattr(previous_batch.sample_state.host, 'ctx_only_responses'):
+                            self._enqueue_responses(previous_batch.sample_state.host.ctx_only_responses)
+                            logger.debug(
+                                f'[RANK {self.dist.rank} PP_RANK {self.dist.pp_rank}] Enqueued {len(previous_batch.sample_state.host.ctx_only_responses)} ctx_only responses'
+                            )
                     self.micro_batches[prev_microbatch_id] = None
 
                 # march forward in microbatch slots
                 microbatch_id = (microbatch_id + 1) % self.num_micro_batches
+
+                if self.kv_cache_transceiver and self.ctx_in_transmission_requests:
+                    self._terminate_ctx_finished_requests()
 
                 if self.enable_iter_perf_stats and previous_batch is not None:
                     self._process_iter_stats(finished_requests,
@@ -1296,6 +1355,8 @@ class PyExecutor:
         if not self.enable_attention_dp:
             self._update_new_active_requests_queue_latency(new_requests)
             new_requests = self._merge_requests(new_requests)
+            for req in new_requests:
+                logger.debug(f'INITIAL_STATE: Adding req {req.py_request_id} with initial state={req.state}, llm_request_type={req.llm_request_type}, rank={self.dist.rank}')
             self.active_requests.extend(new_requests)
             return new_requests
 
@@ -1366,6 +1427,8 @@ class PyExecutor:
             new_requests_cur_rank)
 
         new_requests_cur_rank = self._merge_requests(new_requests_cur_rank)
+        for req in new_requests_cur_rank:
+            logger.debug(f'INITIAL_STATE: Adding req {req.py_request_id} with initial state={req.state}, llm_request_type={req.llm_request_type}, rank={self.dist.rank}')
         self.active_requests.extend(new_requests_cur_rank)
         return new_requests_cur_rank
 
@@ -1725,7 +1788,14 @@ class PyExecutor:
             if request.state != LlmRequestState.GENERATION_COMPLETE:  # skip failed requests
                 request.move_to_next_context_chunk()
             if request.context_remaining_length == 0:
-                request.state = LlmRequestState.GENERATION_IN_PROGRESS
+                # In disaggregated serving, context-only requests should NOT transition to generation states
+                # They should complete as context requests and trigger KV cache transfer to generation servers
+                if request.llm_request_type == LlmRequestType.LLMREQUEST_TYPE_CONTEXT_ONLY and self.kv_cache_transceiver is not None:
+                    logger.debug(f'CONTEXT_COMPLETE: Context-only req {request.py_request_id} completed context processing (context_remaining_length=0, rank={self.dist.rank}, pp_rank={getattr(self.dist, "pp_rank", "N/A")}) - staying as context request')
+                    # Don't transition to generation state - let it complete as context request
+                else:
+                    logger.debug(f'TRANSITION_TO_GEN: Setting req {request.py_request_id} from {request.state} to GENERATION_IN_PROGRESS (context_remaining_length=0, is_context_only={request.llm_request_type == LlmRequestType.LLMREQUEST_TYPE_CONTEXT_ONLY}, rank={self.dist.rank}, pp_rank={getattr(self.dist, "pp_rank", "N/A")})')
+                    request.state = LlmRequestState.GENERATION_IN_PROGRESS
 
     def _update_request_states_star_attention(
             self, scheduled_requests: ScheduledRequests):
@@ -1739,6 +1809,7 @@ class PyExecutor:
 
     @nvtx_range("_update_request_states")
     def _update_request_states(self, scheduled_requests: ScheduledRequests):
+        logger.debug(f'_update_request_states called: rank={self.dist.rank}, pp_rank={getattr(self.dist, "pp_rank", "N/A")}, {len(scheduled_requests.context_requests)} context reqs, {len(scheduled_requests.generation_requests)} gen reqs')
         cp_config = self.dist.cp_config
         if 'cp_type' in cp_config:
             cp_type = cp_config['cp_type']
@@ -1826,8 +1897,7 @@ class PyExecutor:
         if 0 not in self.dist.mapping.tp_group and not self.gather_all_responses:
             return
 
-        logger.debug(
-            f'before gather, rank = {self.dist.rank}, responses = {responses}')
+        logger.debug(f'_enqueue_responses: rank={self.dist.rank}, {len(responses)} responses')
         if self.enable_attention_dp and self.dist.world_size != 1:
             if not self.gather_all_responses:
                 responses_list = self.dist.tp_gather(responses)
@@ -1840,8 +1910,6 @@ class PyExecutor:
                         if resp is not None:
                             gather_responses.update(resp)
                     responses = gather_responses
-        logger.debug(
-            f'after gather, rank = {self.dist.rank}, responses = {responses}')
 
         if self.dist.rank == 0 or self.gather_all_responses:
             with self.response_cv:
@@ -1850,6 +1918,7 @@ class PyExecutor:
                         self.responses[req_id].append(resp)
                     else:
                         self.responses.update({req_id: [resp]})
+                    logger.debug(f'  Added response for req {req_id}')
                 self.response_cv.notify_all()
 
     @nvtx_range("_handle_first_token_response")
@@ -1871,10 +1940,15 @@ class PyExecutor:
         requests_to_terminate = []
         new_active_requests = []
         logger.debug(
-            f'------before _handle_responses, rank = {self.dist.rank}, output = {self.active_requests}'
+            f'------before _handle_responses, rank = {self.dist.rank}, pp_rank = {getattr(self.dist, "pp_rank", "N/A")}, pp_size = {getattr(self.dist, "pp_size", "N/A")}, has_kv_transceiver = {self.kv_cache_transceiver is not None}, num_active = {len(self.active_requests)}'
         )
+        # We have active requests, but the responses are not being created somewhere.
+        # This has to do with last PP rank vs. non-last PP rank.
+        # TODO: Go and trace this.
         for request in self.active_requests:
             req_id = request.py_request_id
+            logger.debug(f'  Processing req {req_id}: state={request.state}, py_decoding_iter={request.py_decoding_iter}, is_finished={request.is_finished}, request_type={getattr(request, "request_type", "N/A")}, llm_request_type={getattr(request, "llm_request_type", "N/A")}, is_generation_only={request.is_generation_only_request()}')
+            
             # no responses for dummy request, and finish it
             if request.is_attention_dp_dummy:
                 requests_to_terminate.append(request)
@@ -1888,6 +1962,7 @@ class PyExecutor:
                         not self.disable_overlap_scheduler
                         and request.py_decoding_iter <= 1):
                     new_active_requests.append(request)
+                    logger.debug(f'    Skipped gen-only req {req_id}: in_transmission={request.is_disagg_generation_transmission_in_progress}, py_decoding_iter={request.py_decoding_iter}')
                     continue
 
             request.draft_tokens = request.py_draft_tokens
@@ -1897,12 +1972,17 @@ class PyExecutor:
                 request.update_perf_metrics(self.model_engine.iter_counter)
 
             request_done = False
-            if request.py_decoding_iter == 1 or request.is_finished or \
-                    request.py_decoding_iter % self.stream_interval == 0:
+            should_create = (request.py_decoding_iter == 1 or request.is_finished or 
+                           request.py_decoding_iter % self.stream_interval == 0)
+            if not should_create:
+                logger.debug(f'    Skipped req {req_id}: py_decoding_iter={request.py_decoding_iter}, is_finished={request.is_finished}, stream_interval={self.stream_interval}')
+            
+            if should_create:
                 response = request.create_response(False, self.dist.rank)
                 if response:
                     request_done = response.result.is_final
                     new_responses.update({req_id: response})
+                    logger.debug(f'    Created response for req {req_id}: is_final={request_done}')
 
             if request_done:
                 if request.is_disagg_context_transmission_state:
@@ -1912,9 +1992,12 @@ class PyExecutor:
             else:
                 new_active_requests.append(request)
         self.active_requests = new_active_requests
+        logger.debug(f'  Summary: {len(new_responses)} responses, {len(requests_to_terminate)} to terminate')
         self._enqueue_responses(new_responses)
         for request in requests_to_terminate:
             self._terminate_request(request)
+        logger.debug(
+            f'------after _handle_responses, rank = {self.dist.rank}, num_active = {len(self.active_requests)}')
         return requests_to_terminate
 
     @nvtx_range("_terminate_ctx_finished_requests")
