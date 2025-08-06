@@ -545,9 +545,17 @@ class PybindMirror(ABC):
             cpp_fields = PybindMirror.get_pybind_variable_fields(pybind_class)
             python_fields = set(cls.model_fields.keys())
 
+            # DEBUG: Print field comparison for CacheTransceiverConfig
+            if cls.__name__ == "CacheTransceiverConfig":
+                print(f"[DEBUG] C++ fields for {cls.__name__}: {cpp_fields}")
+                print(f"[DEBUG] Python fields for {cls.__name__}: {python_fields}")
+
             # Check if all C++ fields exist in the Python class
             for field in cpp_fields:
                 if field not in python_fields:
+                    # DEBUG: Show the specific field that's missing
+                    if cls.__name__ == "CacheTransceiverConfig":
+                        print(f"[DEBUG] Missing field: {field}")
                     raise ValueError(
                         f"Field {field} is not mirrored in Python class {cls.__name__} from C++ class {pybind_class.__name__}. Please update the class."
                     )
@@ -1004,10 +1012,29 @@ class CacheTransceiverConfig(StrictBaseModel, PybindMirror):
         default=None,
         description="The max number of tokens the transfer buffer can fit.")
 
+    kv_transfer_timeout_ms: Optional[int] = Field(
+        default=None,
+        description="Timeout in milliseconds for KV cache transfer operations. "
+                   "Requests exceeding this timeout will be terminated.")
+
     def _to_pybind(self):
-        return _CacheTransceiverConfig(
+        # Convert timeout to milliseconds if present
+        timeout_ms = None
+        if hasattr(self, 'kv_transfer_timeout_ms') and self.kv_transfer_timeout_ms is not None:
+            # print(f"[DEBUG] Setting KV cache transfer timeout to {self.kv_transfer_timeout_ms}ms")
+            # This path is being hit at L257 (10k ms, ctx) and L248 (5k ms, gen)
+            # How come this setter is not working then?
+            # config.setKvTransferTimeoutMs(self.kv_transfer_timeout_ms)
+            timeout_ms = self.kv_transfer_timeout_ms
+            print(f"[DEBUG] Setting KV cache transfer timeout to {timeout_ms}ms")
+        else:
+            print("[DEBUG] No KV cache transfer timeout configured")
+            
+        config = _CacheTransceiverConfig(
             backend=_CacheTransceiverBackendType.from_string(self.backend),
-            max_tokens_in_buffer=self.max_tokens_in_buffer)
+            max_tokens_in_buffer=self.max_tokens_in_buffer,
+            kv_transfer_timeout_ms=timeout_ms)
+        return config
 
 
 @dataclass

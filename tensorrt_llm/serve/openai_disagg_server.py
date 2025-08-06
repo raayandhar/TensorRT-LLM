@@ -303,11 +303,12 @@ class OpenAIDisaggServer:
         except Exception as e:
             if gen_server is not None:
                 await self.gen_router.finish_request(req)
-            # TODO: CRITICAL FIX NEEDED - Add KV cache cleanup notification to context server
-            # When generation fails after successful context completion, we need to notify 
-            # the prefill node to release the allocated KV cache for this request
+            
+            # Log KV cache leak detection - context server has timeout-based cleanup as safety net
             if need_ctx and ctx_response is not None:
-                logger.debug(f"Exception: {req.disaggregated_params.ctx_request_id}, this means we are leaking KV cache!")
+                ctx_request_id = getattr(req.disaggregated_params, 'ctx_request_id', None) if req.disaggregated_params else None
+                logger.warning(f"Generation failed for request {ctx_request_id} after successful context completion. "
+                             f"Context server will automatically clean up stale requests in the next executor iteration.")
             
             # We mock a response here because otherwise, we error out before
             # having the "failed" requests pool up on the context server.

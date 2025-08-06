@@ -1661,6 +1661,43 @@ public:
         return elapsed >= *mAllottedTimeMs;
     }
 
+    [[nodiscard]] bool isKvTransferTimedOut() const
+    {
+        if (!mKvTransferStartTime.has_value() || !mKvTransferTimeoutMs.has_value())
+        {
+            return false;
+        }
+        auto const currentTime = std::chrono::steady_clock::now();
+        auto const elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - mKvTransferStartTime.value());
+        return elapsed >= mKvTransferTimeoutMs.value();
+    }
+
+    void setKvTransferStartTime(std::chrono::steady_clock::time_point const& time)
+    {
+        mKvTransferStartTime = time;
+    }
+
+    void setKvTransferTimeout(MillisecondsType timeout)
+    {
+        mKvTransferTimeoutMs = timeout;
+    }
+
+    void clearKvTransferTracking()
+    {
+        mKvTransferStartTime = std::nullopt;
+        mKvTransferTimeoutMs = std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<std::chrono::steady_clock::time_point> getKvTransferStartTime() const
+    {
+        return mKvTransferStartTime;
+    }
+
+    [[nodiscard]] std::optional<MillisecondsType> getKvTransferTimeout() const
+    {
+        return mKvTransferTimeoutMs;
+    }
+
     void setFinishedReason(executor::FinishReason reason, SizeType32 beam)
     {
         mFinishReasons.at(beam) = reason;
@@ -2002,6 +2039,10 @@ protected:
     std::chrono::steady_clock::time_point mStartTime;
     // Time in milliseconds after which the model is finished with a `timeout` finishReason.
     std::optional<MillisecondsType> mAllottedTimeMs{std::nullopt};
+
+    // KV cache transfer timeout tracking
+    std::optional<std::chrono::steady_clock::time_point> mKvTransferStartTime{std::nullopt};
+    std::optional<MillisecondsType> mKvTransferTimeoutMs{std::nullopt};
 
     // Tensors containing the additional context output.
     TensorMap mAdditionalContextOutputTensors;

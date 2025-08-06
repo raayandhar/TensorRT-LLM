@@ -539,6 +539,9 @@ def create_py_executor_instance(
     attention_type = AttentionTypeCpp.MLA if is_mla(
         config) else AttentionTypeCpp.DEFAULT
     cache_transceiver_config = executor_config.cache_transceiver_config
+    print(f"[DEBUG] Cache transceiver config: {cache_transceiver_config}")
+    print(f"[DEBUG] Cache transceiver config kv_transfer_timeout_ms: {cache_transceiver_config.kv_transfer_timeout_ms}")
+    # I think it's OK... not sure why sometimes we are not getting the init. Beyond my understanding at this point.
     kv_cache_transceiver = create_kv_cache_transceiver(
         mapping, kv_cache_manager, attention_type, cache_transceiver_config)
     return PyExecutor(

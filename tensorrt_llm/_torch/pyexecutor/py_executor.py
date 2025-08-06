@@ -196,6 +196,8 @@ class PyExecutor:
         self.expected_num_active_requests = 0
         self.ctx_in_transmission_requests = []
         logger.debug(f"[CTX_TRANSMISSION] Initialized ctx_in_transmission_requests as empty list - request_ids: [], client_ids: []")
+        # Track requests from previous iteration to detect stale ones
+        self.prev_ctx_transmission_request_ids = set()
         self.previous_batch: Optional[BatchState] = None
         self.num_scheduled_requests: int = 0
         self.benchmark_req_queues_size = int(

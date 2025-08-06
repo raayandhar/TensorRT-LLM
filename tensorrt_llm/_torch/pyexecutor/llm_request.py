@@ -260,7 +260,8 @@ class LlmResponse:
     def has_error(self):
         return self.error_msg is not None
 
-
+# NOTE TO RAAYAN: Do I need to add my request changes to also be added to the C++ LlmRequest class?
+# Can it be "detoured" to the Python implementation?
 class LlmRequest(tensorrt_llm.bindings.internal.batch_manager.LlmRequest):
     """LlmRequest wraps `bindings.internal.batch_manager.LlmRequest`
     but detour some features to Python implementation"""
@@ -310,6 +311,10 @@ class LlmRequest(tensorrt_llm.bindings.internal.batch_manager.LlmRequest):
         self.is_attention_dp_dummy = False
         self.is_cuda_graph_dummy = False
         self.py_lora_task_layer_module_configs = None
+
+        # CHANGES:
+        self.py_kv_transfer_start_time = None # Is there a reason we don't type things in this class...? Is it because we've already typed them in the C++ class?
+        self.py_kv_transfer_timeout_ms = None # Don't think this is the right place to keep this.
 
         self.py_return_log_probs = return_log_probs
         self.py_return_context_logits = return_context_logits

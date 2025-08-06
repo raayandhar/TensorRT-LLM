@@ -101,6 +101,25 @@ class BindKvCacheTransceiver(KvCacheTransceiver):
         tokens_per_block = kv_cache_manager.tokens_per_block
         dtype = kv_cache_manager.dtype
 
+        # Theory: the yaml gets parsed into Python objects (llm_args.py)
+        # Then we convert to C++ objects via _to_pybind() (???)
+        # So the types have to actually make sense and be compatible.
+        # I'm not going to bother with debugging that for now, so just cover both cases I guess.
+        # NOTE FOR RAAYAN: You should check this. It's very ugly right now.
+        self.kv_cache_transfer_timeout_ms = None
+        if hasattr(cache_transceiver_config, 'kv_transfer_timeout_ms') and cache_transceiver_config.kv_transfer_timeout_ms:
+            # The timeout is always an integer in milliseconds from the C++ bindings
+            self.kv_cache_transfer_timeout_ms = int(cache_transceiver_config.kv_transfer_timeout_ms)
+            print(f"[DEBUG] KV cache transceiver initialized with timeout: {self.kv_cache_transfer_timeout_ms}ms")
+            # This is being hit in logs at L595 and also L73753:
+            # It then wraps around to L257 but that debug print belongs to llm_args.py.
+            # [DEBUG] KV cache transceiver initialized with timeout: 10000ms (ctx)
+            # This is being hit in logs at L315 and also L90495:
+            # It then wraps round to L248 but that debug print belongs to llm_args.py.
+            # [DEBUG] KV cache transceiver initialized with timeout: 5000ms (gen)
+        else:
+            print("[DEBUG] KV cache transceiver initialized without timeout")
+
         self.impl = CacheTransceiverCpp(kv_cache_manager.impl,
                                         total_num_kv_heads_per_layer, head_dim,
                                         tokens_per_block, world_config, dtype,
