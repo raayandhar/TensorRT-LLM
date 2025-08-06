@@ -853,6 +853,10 @@ class PyExecutor:
 
         if self.kv_cache_transceiver:
             self._check_disagg_gen_transfer_status()
+            # Looking at the C++ side this is when we go from
+            # kDISAGG_GENERATION_TRANS_IN_PROGRESS to kDISAGG_GENERATION_TRANS_COMPLETE
+            # So any leftover requests still in progress are a mem leak??
+            self._check_gen_kv_transfer_timeout()
 
         iter_stats = None
         if self.enable_iter_perf_stats:
@@ -948,6 +952,11 @@ class PyExecutor:
                         ctx_transmission_reqs = self._send_disagg_ctx_cache(
                             scheduled_batch.context_requests)
                         # For context only req in transmission, we reset the state since sampler might have changed it
+                        # Should we be marking the time here? Or in the _send_disagg_ctx_cache?
+                        # Maybe check if the config value is not None in order to avoid this time.time() call?
+                        # if self.kv_cache_transceiver.config.kv_cache_transfer_timeout_ms is not None:
+                        #     req.py_kv_transfer_start_time = time.time()
+                        # Smarter to probably do this in _send_disagg_ctx_cache?
                         for req in ctx_transmission_reqs:
                             req.state = LlmRequestState.DISAGG_CONTEXT_TRANS_IN_PROGRESS
 
@@ -960,6 +969,10 @@ class PyExecutor:
                 if self.kv_cache_transceiver and self.ctx_in_transmission_requests:
                     self._log_ctx_transmission_state("Before _terminate_ctx_finished_requests in _executor_loop")
                     self._terminate_ctx_finished_requests()
+                    # Now could be a good time to check the timing stuff on ctx side?
+                    # I think yes, we should be terminating the other requests before, so it should be good.
+                    # This is the last point that a request remains in the ctx in transmission stage (? is that true?), so if its stuck here its probably a mem leak
+                    self._check_ctx_kv_transfer_timeout()
                     self._log_ctx_transmission_state("After _terminate_ctx_finished_requests in _executor_loop")
 
                 if self.enable_iter_perf_stats:
@@ -971,6 +984,42 @@ class PyExecutor:
                             scheduled_requests=scheduled_batch),
                                    iter_stats=iter_stats,
                                    iter_start_time=iter_start_time))
+
+    # Not the right place to put this so need to change this later
+    # Maybe should have ctx/gen specific stuff instead.
+    # OK, I'm splitting by ctx/gen, I think it makes more sense or at least is simpler.
+    # Because we shouldn't be checking at the same time as well.
+    def _check_ctx_kv_transfer_timeout(self):
+        if not hasattr(self.kv_cache_transceiver, 'kv_cache_transfer_timeout_ms') or not self.kv_cache_transceiver.kv_cache_transfer_timeout_ms:
+            return
+        
+        current_time = time.time()
+        # We are in ms so multiply by 1000 later.
+        timeout_ms = self.kv_cache_transceiver.kv_cache_transfer_timeout_ms
+
+        for req in self.ctx_in_transmission_requests:
+            if req.py_kv_transfer_start_time is None:
+                continue
+            if (current_time - req.py_kv_transfer_start_time) * 1000 > timeout_ms:
+                logger.warning(f"KV cache transfer timeout for request {req.id}")
+                # So this should free the resources is my understanding.
+                self._terminate_request(req)
+                self.ctx_in_transmission_requests.remove(req)
+
+    # Need to identify the point where we go from DISAGG_GENERATION_TRANS_IN_PROGRESS to DISAGG_GENERATION_TRANS_COMPLETE
+    def _check_gen_kv_transfer_timeout(self):
+        if not hasattr(self.kv_cache_transceiver, 'kv_cache_transfer_timeout_ms') or not self.kv_cache_transceiver.kv_cache_transfer_timeout_ms:
+            return
+        
+        current_time = time.time()
+        timeout_ms = self.kv_cache_transceiver.kv_cache_transfer_timeout_ms
+        
+        for req in self.active_requests:
+            if req.is_disagg_generation_transmission_in_progress and req.py_kv_transfer_start_time is not None:
+                if (current_time - req.py_kv_transfer_start_time) * 1000 > timeout_ms:
+                    logger.warning(f"KV cache transfer timeout for request {req.id}")
+                    self._terminate_request(req)
+                    self.active_requests.remove(req)
 
     def _prepare_draft_requests(self, requests):
         try:
@@ -1228,6 +1277,8 @@ class PyExecutor:
                 req.context_current_position = req.prompt_len
                 req.decoding_iter = 1
                 req.py_decoding_iter = 1
+                # Clear KV transfer tracking since transmission is complete
+                req.py_kv_transfer_start_time = None
                 first_gen_tokens = req.context_phase_params.first_gen_tokens
                 ctx_draft_tokens = req.context_phase_params.draft_tokens
                 req.py_draft_tokens = [] if ctx_draft_tokens is None else ctx_draft_tokens
@@ -1250,6 +1301,19 @@ class PyExecutor:
         else:
             for req in new_gen_reqs:
                 self.kv_cache_transceiver.request_and_receive_async(req)
+        
+        # We move to DISAGG_GENERATION_TRANS_IN_PROGRESS state in request_and_receive_async
+        # so we need to check the status of the requests
+        if self.kv_cache_transceiver.config.kv_cache_transfer_timeout_ms is not None:
+            for req in new_gen_reqs:
+                # One potential issue here: we only have this for request_and_receive_async.
+                # For the other cases (see ENV variable checks) we go to DISAGG_GENERATION_TRANS_COMPLETE.
+                if req.state == LlmRequestState.DISAGG_GENERATION_TRANS_IN_PROGRESS:
+                    # We should change this to be separate from recv/send?? i.e. ctx/gen?
+                    # Or no, this will never happen...
+                    # We should reset this again some point later, need to identify when.
+                    req.py_kv_transfer_start_time = time.time()
+        
 
         block_transfer = all([
             req.is_disagg_generation_transmission_in_progress
@@ -1283,6 +1347,12 @@ class PyExecutor:
             req for req in scheduled_ctx_requests
             if req.state == LlmRequestState.DISAGG_CONTEXT_TRANS_IN_PROGRESS
         ]
+
+        # Maybe a smarter way to write this...?
+        if self.kv_cache_transceiver.config.kv_cache_transfer_timeout_ms is not None:
+            for req in ctx_transmission_reqs:
+                if req.state == LlmRequestState.DISAGG_CONTEXT_TRANS_IN_PROGRESS:
+                    req.py_kv_transfer_start_time = time.time()
 
         return ctx_transmission_reqs
 
@@ -1540,6 +1610,8 @@ class PyExecutor:
         for request in self.ctx_in_transmission_requests[:]:
             if request.is_disagg_context_complete_state:
                 logger.debug(f"[CTX_TRANSMISSION] Terminating and removing request {request.py_request_id} (client_id: {request.py_client_id}, state: {request.state.name}) from ctx_in_transmission_requests")
+                # Clear KV transfer tracking since context transmission is complete
+                request.py_kv_transfer_start_time = None
                 self._terminate_request(request)
                 self.ctx_in_transmission_requests.remove(request)
                 self._log_ctx_transmission_state(f"After removing request {request.py_request_id}")

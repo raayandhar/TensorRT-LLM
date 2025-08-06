@@ -313,8 +313,10 @@ class LlmRequest(tensorrt_llm.bindings.internal.batch_manager.LlmRequest):
         self.py_lora_task_layer_module_configs = None
 
         # CHANGES:
+        # Need to make sure this is correctly binded, missing in the C++ side.
         self.py_kv_transfer_start_time = None # Is there a reason we don't type things in this class...? Is it because we've already typed them in the C++ class?
-        self.py_kv_transfer_timeout_ms = None # Don't think this is the right place to keep this.
+        # This can now be accessed from the kv_cache_transceiver I believe. It should be a member so we can get it directly.
+        # self.py_kv_transfer_timeout_ms = None # Don't think this is the right place to keep this.
 
         self.py_return_log_probs = return_log_probs
         self.py_return_context_logits = return_context_logits
