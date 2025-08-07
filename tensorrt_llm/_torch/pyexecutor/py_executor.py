@@ -1304,7 +1304,7 @@ class PyExecutor:
         
         # We move to DISAGG_GENERATION_TRANS_IN_PROGRESS state in request_and_receive_async
         # so we need to check the status of the requests
-        if self.kv_cache_transceiver.config.kv_cache_transfer_timeout_ms is not None:
+        if hasattr(self.kv_cache_transceiver, 'kv_cache_transfer_timeout_ms') and self.kv_cache_transceiver.kv_cache_transfer_timeout_ms is not None:
             for req in new_gen_reqs:
                 # One potential issue here: we only have this for request_and_receive_async.
                 # For the other cases (see ENV variable checks) we go to DISAGG_GENERATION_TRANS_COMPLETE.
@@ -1349,7 +1349,7 @@ class PyExecutor:
         ]
 
         # Maybe a smarter way to write this...?
-        if self.kv_cache_transceiver.config.kv_cache_transfer_timeout_ms is not None:
+        if hasattr(self.kv_cache_transceiver, 'kv_cache_transfer_timeout_ms') and self.kv_cache_transceiver.kv_cache_transfer_timeout_ms is not None:
             for req in ctx_transmission_reqs:
                 if req.state == LlmRequestState.DISAGG_CONTEXT_TRANS_IN_PROGRESS:
                     req.py_kv_transfer_start_time = time.time()
