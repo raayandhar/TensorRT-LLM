@@ -107,10 +107,14 @@ class BindKvCacheTransceiver(KvCacheTransceiver):
         # I'm not going to bother with debugging that for now, so just cover both cases I guess.
         # NOTE FOR RAAYAN: You should check this. It's very ugly right now.
         self.kv_cache_transfer_timeout_ms = None
+        print(f"[KV_TIMEOUT_DEBUG] Initializing KvCacheTransceiver - config has kv_transfer_timeout_ms: {hasattr(cache_transceiver_config, 'kv_transfer_timeout_ms')}")
+        if hasattr(cache_transceiver_config, 'kv_transfer_timeout_ms'):
+            print(f"[KV_TIMEOUT_DEBUG] kv_transfer_timeout_ms value: {cache_transceiver_config.kv_transfer_timeout_ms}")
         if hasattr(cache_transceiver_config, 'kv_transfer_timeout_ms') and cache_transceiver_config.kv_transfer_timeout_ms:
             # The timeout is always an integer in milliseconds from the C++ bindings
             self.kv_cache_transfer_timeout_ms = int(cache_transceiver_config.kv_transfer_timeout_ms)
             print(f"[DEBUG] KV cache transceiver initialized with timeout: {self.kv_cache_transfer_timeout_ms}ms")
+            print(f"[KV_TIMEOUT_DEBUG] Successfully set kv_cache_transfer_timeout_ms to {self.kv_cache_transfer_timeout_ms}ms")
             # This is being hit in logs at L595 and also L73753:
             # It then wraps around to L257 but that debug print belongs to llm_args.py.
             # [DEBUG] KV cache transceiver initialized with timeout: 10000ms (ctx)
@@ -118,6 +122,7 @@ class BindKvCacheTransceiver(KvCacheTransceiver):
             # It then wraps round to L248 but that debug print belongs to llm_args.py.
             # [DEBUG] KV cache transceiver initialized with timeout: 5000ms (gen)
         else:
+            print(f"[KV_TIMEOUT_DEBUG] No timeout configured - kv_cache_transfer_timeout_ms remains None")
             print("[DEBUG] KV cache transceiver initialized without timeout")
 
         self.impl = CacheTransceiverCpp(kv_cache_manager.impl,

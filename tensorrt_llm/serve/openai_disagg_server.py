@@ -59,11 +59,15 @@ class OpenAIDisaggServer:
         self.conditional_disagg_config = conditional_disagg_config
 
         self.failure_injection_enabled = os.getenv("TRTLLM_INJECT_GEN_FAILURES", "0") == "1"
-        self.failure_rate = float(os.getenv("TRTLLM_GEN_FAILURE_RATE", "0.1"))
+        self.failure_rate = float(os.getenv("TRTLLM_GEN_FAILURE_RATE", "0.0"))
+        self.fail_only = os.getenv("FAIL_ONLY", "")  # New environment variable for specific request ID
         self.request_count = 0
         
         if self.failure_injection_enabled:
             logger.warning(f"Generation failure injection ENABLED with {self.failure_rate*100}% failure rate")
+        
+        if self.fail_only:
+            logger.warning(f"Selective failure injection ENABLED for context request ID: {self.fail_only}")
 
         if max_retries < 0:
             raise ValueError(f"Max retries {max_retries} must be greater than or equal to 0")
@@ -312,7 +316,7 @@ class OpenAIDisaggServer:
             
             # We mock a response here because otherwise, we error out before
             # having the "failed" requests pool up on the context server.
-            if self.failure_injection_enabled and isinstance(e, HTTPException) and "KV cache leak testing" in str(e.detail):
+            if (self.failure_injection_enabled or self.fail_only) and isinstance(e, HTTPException) and "KV cache leak testing" in str(e.detail):
                 logger.info(f"Handling injected generation failure gracefully for request {req.disaggregated_params.ctx_request_id if req.disaggregated_params else 'unknown'}")
                 # Return a mock successful response to the client while internally the generation failed
                 # This allows testing KV cache leaks without client errors
@@ -405,6 +409,12 @@ class OpenAIDisaggServer:
             if random.random() < self.failure_rate:
                 logger.warning(f"INJECTING FAILURE for generation request {self.request_count} to simulate KV cache leak. {request.disaggregated_params.ctx_request_id}")
                 raise HTTPException(status_code=500, detail="Simulated generation server failure for KV cache leak testing")
+        
+        # Inject failure for specific context request ID when FAIL_ONLY is set
+        if self.fail_only and hasattr(request, 'disaggregated_params') and request.disaggregated_params and request.disaggregated_params.ctx_request_id:
+            if str(request.disaggregated_params.ctx_request_id) == self.fail_only:
+                logger.warning(f"INJECTING FAILURE for context request {request.disaggregated_params.ctx_request_id} as requested by FAIL_ONLY environment variable")
+                raise HTTPException(status_code=500, detail=f"Simulated server failure for request {request.disaggregated_params.ctx_request_id} for KV cache leak testing")
         
         return await self.send_request(url, request, "/v1/completions", CompletionResponse, self.create_completion_generator)
 

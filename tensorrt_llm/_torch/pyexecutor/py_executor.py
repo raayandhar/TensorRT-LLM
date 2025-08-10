@@ -856,7 +856,9 @@ class PyExecutor:
             # Looking at the C++ side this is when we go from
             # kDISAGG_GENERATION_TRANS_IN_PROGRESS to kDISAGG_GENERATION_TRANS_COMPLETE
             # So any leftover requests still in progress are a mem leak??
+            logger.debug(f"[KV_TIMEOUT_DEBUG] About to call _check_gen_kv_transfer_timeout in _prepare_and_schedule_batch")
             self._check_gen_kv_transfer_timeout()
+            logger.debug(f"[KV_TIMEOUT_DEBUG] Completed _check_gen_kv_transfer_timeout in _prepare_and_schedule_batch")
 
         iter_stats = None
         if self.enable_iter_perf_stats:
@@ -972,7 +974,9 @@ class PyExecutor:
                     # Now could be a good time to check the timing stuff on ctx side?
                     # I think yes, we should be terminating the other requests before, so it should be good.
                     # This is the last point that a request remains in the ctx in transmission stage (? is that true?), so if its stuck here its probably a mem leak
+                    logger.debug(f"[KV_TIMEOUT_DEBUG] About to call _check_ctx_kv_transfer_timeout in _executor_loop")
                     self._check_ctx_kv_transfer_timeout()
+                    logger.debug(f"[KV_TIMEOUT_DEBUG] Completed _check_ctx_kv_transfer_timeout in _executor_loop")
                     self._log_ctx_transmission_state("After _terminate_ctx_finished_requests in _executor_loop")
 
                 if self.enable_iter_perf_stats:
@@ -990,36 +994,55 @@ class PyExecutor:
     # OK, I'm splitting by ctx/gen, I think it makes more sense or at least is simpler.
     # Because we shouldn't be checking at the same time as well.
     def _check_ctx_kv_transfer_timeout(self):
+        logger.debug(f"[KV_TIMEOUT_DEBUG] _check_ctx_kv_transfer_timeout called - has_transceiver: {self.kv_cache_transceiver is not None}")
         if not hasattr(self.kv_cache_transceiver, 'kv_cache_transfer_timeout_ms') or not self.kv_cache_transceiver.kv_cache_transfer_timeout_ms:
+            logger.debug(f"[KV_TIMEOUT_DEBUG] _check_ctx_kv_transfer_timeout - no timeout configured, returning early")
             return
         
         current_time = time.time()
         # We are in ms so multiply by 1000 later.
         timeout_ms = self.kv_cache_transceiver.kv_cache_transfer_timeout_ms
+        logger.debug(f"[KV_TIMEOUT_DEBUG] _check_ctx_kv_transfer_timeout - current_time: {current_time}, timeout_ms: {timeout_ms}, num_ctx_requests: {len(self.ctx_in_transmission_requests)}")
 
         for req in self.ctx_in_transmission_requests:
+            logger.debug(f"[CTX_TRANSMISSION] Checking kv_transfer_start_time on ctx for request {req.py_request_id} (client_id: {req.py_client_id}) to {req.py_kv_transfer_start_time}")
             if req.py_kv_transfer_start_time is None:
+                logger.debug(f"[KV_TIMEOUT_DEBUG] Request {req.py_request_id} has no start time set, skipping timeout check")
                 continue
-            if (current_time - req.py_kv_transfer_start_time) * 1000 > timeout_ms:
-                logger.warning(f"KV cache transfer timeout for request {req.id}")
+            
+            elapsed_time_ms = (current_time - req.py_kv_transfer_start_time) * 1000
+            logger.debug(f"[CTX_TRANSMISSION] Current time: {current_time}, kv_transfer_start_time: {req.py_kv_transfer_start_time}, timeout_ms: {timeout_ms}")
+            logger.debug(f"[KV_TIMEOUT_DEBUG] Request {req.py_request_id} - elapsed_time_ms: {elapsed_time_ms}, timeout_ms: {timeout_ms}, timed_out: {elapsed_time_ms > timeout_ms}")
+            if elapsed_time_ms > timeout_ms:
+                logger.warning(f"[KV_TIMEOUT_DEBUG] KV cache transfer timeout for CTX request {req.py_request_id} - elapsed: {elapsed_time_ms}ms > timeout: {timeout_ms}ms")
                 # So this should free the resources is my understanding.
                 self._terminate_request(req)
                 self.ctx_in_transmission_requests.remove(req)
+                logger.debug(f"[KV_TIMEOUT_DEBUG] Terminated and removed CTX request {req.py_request_id} due to timeout")
 
     # Need to identify the point where we go from DISAGG_GENERATION_TRANS_IN_PROGRESS to DISAGG_GENERATION_TRANS_COMPLETE
     def _check_gen_kv_transfer_timeout(self):
+        logger.debug(f"[KV_TIMEOUT_DEBUG] _check_gen_kv_transfer_timeout called - has_transceiver: {self.kv_cache_transceiver is not None}")
         if not hasattr(self.kv_cache_transceiver, 'kv_cache_transfer_timeout_ms') or not self.kv_cache_transceiver.kv_cache_transfer_timeout_ms:
+            logger.debug(f"[KV_TIMEOUT_DEBUG] _check_gen_kv_transfer_timeout - no timeout configured, returning early")
             return
         
         current_time = time.time()
         timeout_ms = self.kv_cache_transceiver.kv_cache_transfer_timeout_ms
         
+        gen_in_progress_count = sum(1 for req in self.active_requests if req.is_disagg_generation_transmission_in_progress)
+        logger.debug(f"[KV_TIMEOUT_DEBUG] _check_gen_kv_transfer_timeout - current_time: {current_time}, timeout_ms: {timeout_ms}, gen_in_progress_count: {gen_in_progress_count}")
+        
         for req in self.active_requests:
+            logger.debug(f"[CTX_TRANSMISSION] Checking kv_transfer_start_time on gen for request {req.py_request_id} (client_id: {req.py_client_id}) to {req.py_kv_transfer_start_time}")
             if req.is_disagg_generation_transmission_in_progress and req.py_kv_transfer_start_time is not None:
-                if (current_time - req.py_kv_transfer_start_time) * 1000 > timeout_ms:
-                    logger.warning(f"KV cache transfer timeout for request {req.id}")
+                elapsed_time_ms = (current_time - req.py_kv_transfer_start_time) * 1000
+                logger.debug(f"[KV_TIMEOUT_DEBUG] Gen request {req.py_request_id} - elapsed_time_ms: {elapsed_time_ms}, timeout_ms: {timeout_ms}, timed_out: {elapsed_time_ms > timeout_ms}")
+                if elapsed_time_ms > timeout_ms:
+                    logger.warning(f"[KV_TIMEOUT_DEBUG] KV cache transfer timeout for GEN request {req.py_request_id} - elapsed: {elapsed_time_ms}ms > timeout: {timeout_ms}ms")
                     self._terminate_request(req)
                     self.active_requests.remove(req)
+                    logger.debug(f"[KV_TIMEOUT_DEBUG] Terminated and removed GEN request {req.py_request_id} due to timeout")
 
     def _prepare_draft_requests(self, requests):
         try:
@@ -1273,12 +1296,15 @@ class PyExecutor:
 
         for req in scheduled_batch.generation_requests:
             if req.is_disagg_generation_transmission_complete:
+                logger.debug(f"[KV_TIMEOUT_DEBUG] Processing transmission complete for request {req.py_request_id} - current py_kv_transfer_start_time: {req.py_kv_transfer_start_time}")
                 req.state = LlmRequestState.GENERATION_IN_PROGRESS
                 req.context_current_position = req.prompt_len
                 req.decoding_iter = 1
                 req.py_decoding_iter = 1
                 # Clear KV transfer tracking since transmission is complete
+                old_start_time = req.py_kv_transfer_start_time
                 req.py_kv_transfer_start_time = None
+                logger.debug(f"[KV_TIMEOUT_DEBUG] Cleared py_kv_transfer_start_time for GEN request {req.py_request_id} (client_id: {req.py_client_id}) - was: {old_start_time}, now: {req.py_kv_transfer_start_time}")
                 first_gen_tokens = req.context_phase_params.first_gen_tokens
                 ctx_draft_tokens = req.context_phase_params.draft_tokens
                 req.py_draft_tokens = [] if ctx_draft_tokens is None else ctx_draft_tokens
@@ -1304,15 +1330,22 @@ class PyExecutor:
         
         # We move to DISAGG_GENERATION_TRANS_IN_PROGRESS state in request_and_receive_async
         # so we need to check the status of the requests
+        logger.debug(f"[KV_TIMEOUT_DEBUG] _recv_disagg_gen_cache checking timeout config - has_timeout: {hasattr(self.kv_cache_transceiver, 'kv_cache_transfer_timeout_ms')}, timeout_value: {getattr(self.kv_cache_transceiver, 'kv_cache_transfer_timeout_ms', None)}")
         if hasattr(self.kv_cache_transceiver, 'kv_cache_transfer_timeout_ms') and self.kv_cache_transceiver.kv_cache_transfer_timeout_ms is not None:
+            logger.debug(f"[KV_TIMEOUT_DEBUG] Processing {len(new_gen_reqs)} new gen requests for timeout tracking")
             for req in new_gen_reqs:
                 # One potential issue here: we only have this for request_and_receive_async.
                 # For the other cases (see ENV variable checks) we go to DISAGG_GENERATION_TRANS_COMPLETE.
+                logger.debug(f"[KV_TIMEOUT_DEBUG] Checking request {req.py_request_id} state: {req.state.name if hasattr(req.state, 'name') else req.state}")
                 if req.state == LlmRequestState.DISAGG_GENERATION_TRANS_IN_PROGRESS:
                     # We should change this to be separate from recv/send?? i.e. ctx/gen?
                     # Or no, this will never happen...
                     # We should reset this again some point later, need to identify when.
-                    req.py_kv_transfer_start_time = time.time()
+                    current_time = time.time()
+                    req.py_kv_transfer_start_time = current_time
+                    logger.debug(f"[KV_TIMEOUT_DEBUG] Set py_kv_transfer_start_time for GEN request {req.py_request_id} (client_id: {req.py_client_id}) to {req.py_kv_transfer_start_time}")
+                else:
+                    logger.debug(f"[KV_TIMEOUT_DEBUG] Request {req.py_request_id} not in DISAGG_GENERATION_TRANS_IN_PROGRESS state, not setting start time")
         
 
         block_transfer = all([
@@ -1326,7 +1359,9 @@ class PyExecutor:
 
     @nvtx_range("_send_disagg_ctx_cache")
     def _send_disagg_ctx_cache(self, scheduled_ctx_requests):
+        logger.debug(f"[KV_TIMEOUT_DEBUG] _send_disagg_ctx_cache called with {len(scheduled_ctx_requests) if scheduled_ctx_requests else 0} scheduled context requests")
         if (scheduled_ctx_requests is None or len(scheduled_ctx_requests) == 0):
+            logger.debug(f"[KV_TIMEOUT_DEBUG] _send_disagg_ctx_cache returning empty list - no requests to process")
             return []
         for req in scheduled_ctx_requests:
             if req.is_context_only_request and (req.is_context_finished or
@@ -1349,11 +1384,20 @@ class PyExecutor:
         ]
 
         # Maybe a smarter way to write this...?
+        logger.debug(f"[KV_TIMEOUT_DEBUG] _send_disagg_ctx_cache checking timeout config - has_timeout: {hasattr(self.kv_cache_transceiver, 'kv_cache_transfer_timeout_ms')}, timeout_value: {getattr(self.kv_cache_transceiver, 'kv_cache_transfer_timeout_ms', None)}")
         if hasattr(self.kv_cache_transceiver, 'kv_cache_transfer_timeout_ms') and self.kv_cache_transceiver.kv_cache_transfer_timeout_ms is not None:
+            logger.debug(f"[KV_TIMEOUT_DEBUG] Processing {len(ctx_transmission_reqs)} ctx transmission requests for timeout tracking")
             for req in ctx_transmission_reqs:
+                logger.debug(f"[KV_TIMEOUT_DEBUG] Checking CTX request {req.py_request_id} state: {req.state.name if hasattr(req.state, 'name') else req.state}")
                 if req.state == LlmRequestState.DISAGG_CONTEXT_TRANS_IN_PROGRESS:
-                    req.py_kv_transfer_start_time = time.time()
+                    current_time = time.time()
+                    req.py_kv_transfer_start_time = current_time
+                    logger.debug(f"[CTX_TRANSMISSION] Setting py_kv_transfer_start_time for request {req.py_request_id} (client_id: {req.py_client_id}) to {req.py_kv_transfer_start_time}")
+                    logger.debug(f"[KV_TIMEOUT_DEBUG] Set py_kv_transfer_start_time for CTX request {req.py_request_id} (client_id: {req.py_client_id}) to {req.py_kv_transfer_start_time}")
+                else:
+                    logger.debug(f"[KV_TIMEOUT_DEBUG] CTX request {req.py_request_id} not in DISAGG_CONTEXT_TRANS_IN_PROGRESS state, not setting start time")
 
+        logger.debug(f"[KV_TIMEOUT_DEBUG] _send_disagg_ctx_cache returning {len(ctx_transmission_reqs)} ctx transmission requests")
         return ctx_transmission_reqs
 
     def _forward_step(self,
@@ -1606,14 +1650,20 @@ class PyExecutor:
     @nvtx_range("_terminate_ctx_finished_requests")
     def _terminate_ctx_finished_requests(self):
         logger.debug(f"[CTX_TRANSMISSION] _terminate_ctx_finished_requests called")
+        logger.debug(f"[KV_TIMEOUT_DEBUG] _terminate_ctx_finished_requests called with {len(self.ctx_in_transmission_requests)} requests in transmission")
         self._log_ctx_transmission_state("Start of _terminate_ctx_finished_requests")
         for request in self.ctx_in_transmission_requests[:]:
+            logger.debug(f"[KV_TIMEOUT_DEBUG] Checking CTX request {request.py_request_id} - state: {request.state.name if hasattr(request.state, 'name') else request.state}, is_complete: {request.is_disagg_context_complete_state}")
             if request.is_disagg_context_complete_state:
                 logger.debug(f"[CTX_TRANSMISSION] Terminating and removing request {request.py_request_id} (client_id: {request.py_client_id}, state: {request.state.name}) from ctx_in_transmission_requests")
                 # Clear KV transfer tracking since context transmission is complete
+                old_start_time = request.py_kv_transfer_start_time
                 request.py_kv_transfer_start_time = None
+                logger.debug(f"[CTX_TRANSMISSION] Cleared py_kv_transfer_start_time for request {request.py_request_id} (client_id: {request.py_client_id}) to {request.py_kv_transfer_start_time}")
+                logger.debug(f"[KV_TIMEOUT_DEBUG] Cleared py_kv_transfer_start_time for CTX request {request.py_request_id} (client_id: {request.py_client_id}) - was: {old_start_time}, now: {request.py_kv_transfer_start_time}")
                 self._terminate_request(request)
                 self.ctx_in_transmission_requests.remove(request)
+                logger.debug(f"[KV_TIMEOUT_DEBUG] Terminated and removed CTX request {request.py_request_id} (transmission complete)")
                 self._log_ctx_transmission_state(f"After removing request {request.py_request_id}")
         self._log_ctx_transmission_state("End of _terminate_ctx_finished_requests")
 
