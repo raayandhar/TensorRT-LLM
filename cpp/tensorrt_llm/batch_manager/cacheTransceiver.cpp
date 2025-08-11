@@ -237,6 +237,8 @@ void CacheTransceiver::setContextState(LlmRequest* llmRequest)
 void CacheTransceiver::respondAndSendAsync(LlmRequest* llmRequest)
 {
     TLLM_CHECK(llmRequest && llmRequest->isContextOnlyRequest());
+    TLLM_LOG_DEBUG("[HANG_DEBUG] respondAndSendAsync called for request ID: %zu", llmRequest->mRequestId);
+
     llmRequest->setState(LlmRequestState::kDISAGG_CONTEXT_TRANS_IN_PROGRESS);
     // If context phase params is already set, it means that the KV cache
     // transfer is already in progress.
@@ -251,6 +253,9 @@ void CacheTransceiver::respondAndSendAsync(LlmRequest* llmRequest)
     setContextState(llmRequest);
     auto future = mDataResponder->respondAndSendAsync(*llmRequest);
     mResponderFutures.emplace_back(llmRequest, std::move(future));
+
+    TLLM_LOG_DEBUG("[HANG_DEBUG] Added request %zu to mResponderFutures (new size: %zu)", llmRequest->mRequestId,
+        mResponderFutures.size());
 }
 
 void CacheTransceiver::respondAndSendLayerWise(
@@ -300,9 +305,22 @@ void CacheTransceiver::requestAndReceiveAsync(LlmRequest* llmRequest)
 std::vector<LlmRequest::RequestIdType> gatherRequestIds(
     mpi::MpiComm const& mpiComm, std::vector<LlmRequest::RequestIdType> const& requestIds)
 {
+    TLLM_LOG_DEBUG("[HANG_DEBUG] gatherRequestIds: Starting with %zu local requests, MPI rank: %d, size: %d",
+        requestIds.size(), mpiComm.getRank(), mpiComm.getSize());
+
+    // Log the local request IDs
+    for (auto const& id : requestIds)
+    {
+        TLLM_LOG_DEBUG("[HANG_DEBUG] gatherRequestIds: Local request ID: %zu", id);
+    }
+
     int localSize = static_cast<int>(requestIds.size());
     std::vector<int> sizes(mpiComm.getSize());
+
+    TLLM_LOG_DEBUG("[HANG_DEBUG] gatherRequestIds: About to call MPI allgather for sizes");
     mpiComm.allgather(&localSize, sizes.data(), 1, mpi::MpiType::kINT32);
+    TLLM_LOG_DEBUG("[HANG_DEBUG] gatherRequestIds: Returned from MPI allgather for sizes");
+
     // std::vector<LlmRequest::RequestIdType> all_data(total_size);
     std::vector<int> displs(mpiComm.getSize());
     int totalSize = 0;
@@ -310,10 +328,15 @@ std::vector<LlmRequest::RequestIdType> gatherRequestIds(
     {
         displs[i] = totalSize;
         totalSize += sizes[i];
+        TLLM_LOG_DEBUG("[HANG_DEBUG] gatherRequestIds: Rank %d has %d requests", i, sizes[i]);
     }
+
+    TLLM_LOG_DEBUG("[HANG_DEBUG] gatherRequestIds: About to call MPI allgatherv for data (total size: %d)", totalSize);
     std::vector<LlmRequest::RequestIdType> retData(totalSize);
     mpiComm.allgatherv(requestIds.data(), static_cast<int>(requestIds.size()), mpi::MpiType::kUINT64, retData.data(),
         sizes, displs, mpi::MpiType::kUINT64);
+    TLLM_LOG_DEBUG("[HANG_DEBUG] gatherRequestIds: Returned from MPI allgatherv");
+
     return retData;
 }
 
@@ -369,6 +392,17 @@ void updateKVCacheTransferBW(mpi::MpiComm const& mpiComm, LlmRequest* request)
 
 void CacheTransceiver::checkContextTransferStatus(std::optional<int> const& atLeastRequestNum)
 {
+    TLLM_LOG_DEBUG(
+        "[HANG_DEBUG] checkContextTransferStatus called with atLeastRequestNum=%d", atLeastRequestNum.value_or(-1));
+    TLLM_LOG_DEBUG("[HANG_DEBUG] mResponderFutures size: %zu", mResponderFutures.size());
+
+    // Log all pending requests
+    for (auto&& [request, future] : mResponderFutures)
+    {
+        TLLM_LOG_DEBUG("[HANG_DEBUG] Pending responder request ID: %zu, state: %d", request->mRequestId,
+            static_cast<int>(request->mState));
+    }
+
     bool blockAll = !atLeastRequestNum.has_value();
     auto syncComm = mCacheState->getParallelConfig().mEnableAttentionDP ? mMpiGroupTPInDPComm : mMpiGroupTensorParaComm;
     std::vector<LlmRequest::RequestIdType> contextCompleteRequestIds;
@@ -377,13 +411,20 @@ void CacheTransceiver::checkContextTransferStatus(std::optional<int> const& atLe
         if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready)
         {
             contextCompleteRequestIds.push_back(request->mRequestId);
+            TLLM_LOG_DEBUG("[HANG_DEBUG] Request %zu is ready", request->mRequestId);
         }
     }
+    TLLM_LOG_DEBUG("[HANG_DEBUG] contextCompleteRequestIds size: %zu", contextCompleteRequestIds.size());
 
     std::unordered_map<LlmRequest::RequestIdType, int> frequencyMap;
     if ((syncComm) && syncComm->getSize() > 1)
     {
+        TLLM_LOG_DEBUG(
+            "[HANG_DEBUG] About to call gatherRequestIds (MPI allgather) with %zu requests, syncComm size: %d",
+            contextCompleteRequestIds.size(), syncComm->getSize());
         auto gatherRequestIdVec = gatherRequestIds(*syncComm, contextCompleteRequestIds);
+        TLLM_LOG_DEBUG(
+            "[HANG_DEBUG] Returned from gatherRequestIds with %zu total requests", gatherRequestIdVec.size());
         for (auto&& requestId : gatherRequestIdVec)
         {
             frequencyMap[requestId]++;
@@ -391,6 +432,7 @@ void CacheTransceiver::checkContextTransferStatus(std::optional<int> const& atLe
     }
     else
     {
+        TLLM_LOG_DEBUG("[HANG_DEBUG] Not using MPI sync (syncComm is null or size <= 1)");
         for (auto&& requestId : contextCompleteRequestIds)
         {
             frequencyMap[requestId]++;
@@ -421,20 +463,26 @@ void CacheTransceiver::checkContextTransferStatus(std::optional<int> const& atLe
     }
 
     // Complete all the requests in toCompleteIdSet
+    TLLM_LOG_DEBUG("[HANG_DEBUG] About to complete %zu requests (blockAll=%d)", toCompleteIdSet.size(), blockAll);
     for (auto it = mResponderFutures.begin(); it != mResponderFutures.end();)
     {
         auto& [request, future] = *it;
         if (blockAll || (toCompleteIdSet.find(request->mRequestId) != toCompleteIdSet.end()))
         {
+            TLLM_LOG_DEBUG("[HANG_DEBUG] Waiting for future.get() for request %zu", request->mRequestId);
             future.get();
+            TLLM_LOG_DEBUG("[HANG_DEBUG] Got future for request %zu, setting state to COMPLETE", request->mRequestId);
             request->setState(LlmRequestState::kDISAGG_CONTEXT_COMPLETE);
             it = mResponderFutures.erase(it);
         }
         else
         {
+            TLLM_LOG_DEBUG("[HANG_DEBUG] Skipping request %zu (not in toCompleteIdSet)", request->mRequestId);
             ++it;
         }
     }
+    TLLM_LOG_DEBUG(
+        "[HANG_DEBUG] checkContextTransferStatus completed, mResponderFutures size now: %zu", mResponderFutures.size());
 }
 
 void CacheTransceiver::checkGenTransferStatus(std::optional<int> const& atLeastRequestNum)
