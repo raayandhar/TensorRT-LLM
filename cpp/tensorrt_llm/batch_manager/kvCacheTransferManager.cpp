@@ -42,8 +42,6 @@
 
 namespace tr = tensorrt_llm::runtime;
 namespace tk = tensorrt_llm::kernels;
-
-using namespace tensorrt_llm::executor::kv_cache;
 namespace kvc = tensorrt_llm::executor::kv_cache;
 
 namespace tensorrt_llm::batch_manager::kv_cache_manager
@@ -112,7 +110,7 @@ tr::ITensor::SharedPtr KVCacheTransferManager::computeBlockPointer(
 
 void KVCacheTransferManager::copyBlock(BlockPtr const& src, BlockPtr const& dst,
     std::vector<KVCacheBlockPool> const& pools, bool isOffload, int numTokensToCopy, executor::KvCacheTransferMode mode,
-    std::optional<std::string> directory)
+    std::optional<std::string> const& directory)
 {
     TLLM_LOG_DEBUG("copyBlock entered: srcId=%d, dstId=%d, isOffload=%s, mode=%d", src->getBlockId(), dst->getBlockId(),
         (isOffload ? "true" : "false"), static_cast<int>(mode));
@@ -174,7 +172,7 @@ void KVCacheTransferManager::copyBlock(BlockPtr const& src, BlockPtr const& dst,
         auto block_id = src->getBlockId();
 
         TLLM_CHECK_WITH_INFO(
-            directory.has_value(), "Expected a directory path for KVCache offload, but none was provided.");
+            directory.has_value() && directory.value() != "", "Expected a directory path for KVCache offload, but none was provided.");
 
         int size = std::snprintf(nullptr, 0, "%s/block_%d_pool_%zu.bin", directory.value().c_str(), block_id, poolIdx);
 
@@ -203,7 +201,7 @@ void KVCacheTransferManager::copyBlock(BlockPtr const& src, BlockPtr const& dst,
 
 void KVCacheTransferManager::onboard(BlockPtr const& offloadBlock, BlockPtr const& block,
     std::vector<KVCacheBlockPool> const& pools, int numTokensToCopy, executor::KvCacheTransferMode mode,
-    std::optional<std::string> directory)
+    std::optional<std::string> const& directory)
 {
     if (mode != executor::KvCacheTransferMode::DRAM
         && mPendingOffloads.find(offloadBlock->getBlockId()) == mPendingOffloads.end())
@@ -222,7 +220,7 @@ void KVCacheTransferManager::onboard(BlockPtr const& offloadBlock, BlockPtr cons
 
 void KVCacheTransferManager::offload(BlockPtr const& block, BlockPtr const& offloadBlock,
     std::vector<KVCacheBlockPool> const& pools, int numTokensToCopy, executor::KvCacheTransferMode mode,
-    std::optional<std::string> directory)
+    std::optional<std::string> const& directory)
 {
     mPendingOffloads[block->getBlockId()] = tr::CudaEvent();
     copyBlock(block, offloadBlock, pools, true, numTokensToCopy, mode, directory);

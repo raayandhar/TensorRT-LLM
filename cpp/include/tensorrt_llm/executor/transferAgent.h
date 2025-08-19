@@ -170,7 +170,7 @@ private:
 class FileDescs
 {
 public:
-    FileDescs(std::vector<FileDesc>& descs)
+    FileDescs(std::vector<FileDesc> descs)
         : mDescs(std::move(descs))
     {
     }

@@ -42,8 +42,6 @@
 #include <unordered_map>
 #include <vector>
 
-using tensorrt_llm::executor::kv_cache::BaseLoopbackAgent;
-
 namespace tensorrt_llm::batch_manager::eviction_policy
 {
 class BaseEvictionPolicy;
@@ -1156,7 +1154,6 @@ private:
     SizeType32 mTokensPerBlock;
     std::shared_ptr<KVCacheEventManager> mEventManager;
     std::unique_ptr<BaseLoopbackAgent> mLoopbackAgent;
-    std::string mAgentName;
     CudaStreamPtr mStream;
     CacheType mCacheType;
 
