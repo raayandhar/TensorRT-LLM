@@ -110,12 +110,13 @@ void initConfigBindings(nb::module_& m)
         return nb::make_tuple(self.getEnableBlockReuse(), self.getMaxTokens(), self.getMaxAttentionWindowVec(),
             self.getSinkTokenLength(), self.getFreeGpuMemoryFraction(), self.getHostCacheSize(),
             self.getOnboardBlocks(), self.getCrossKvCacheFraction(), self.getSecondaryOffloadMinPriority(),
-            self.getEventBufferMaxSize(), self.getEnablePartialReuse(), self.getCopyOnPartialReuse(), self.getUseUvm(),
-            self.getAttentionDpEventsGatherPeriodMs());
+            self.getTertiaryOffloadMinPriority(), self.getEventBufferMaxSize(), self.getEnablePartialReuse(),
+            self.getCopyOnPartialReuse(), self.getUseUvm(), self.getAttentionDpEventsGatherPeriodMs(),
+            self.getEnableCPUTier(), self.getEnableDiskTier(), self.getDirectoryPath());
     };
     auto kvCacheConfigSetstate = [](tle::KvCacheConfig& self, nb::tuple const& state)
     {
-        if (state.size() != 14)
+        if (state.size() != 18)
         {
             throw std::runtime_error("Invalid state!");
         }
@@ -123,22 +124,28 @@ void initConfigBindings(nb::module_& m)
             nb::cast<std::optional<std::vector<SizeType32>>>(state[2]), nb::cast<std::optional<SizeType32>>(state[3]),
             nb::cast<std::optional<float>>(state[4]), nb::cast<std::optional<size_t>>(state[5]),
             nb::cast<bool>(state[6]), nb::cast<std::optional<float>>(state[7]),
-            nb::cast<std::optional<tle::RetentionPriority>>(state[8]), nb::cast<size_t>(state[9]),
-            nb::cast<bool>(state[10]), nb::cast<bool>(state[11]), nb::cast<bool>(state[12]),
-            nb::cast<SizeType32>(state[13]));
+            nb::cast<std::optional<tle::RetentionPriority>>(state[8]),
+            nb::cast<std::optional<tle::RetentionPriority>>(state[9]), nb::cast<size_t>(state[10]),
+            nb::cast<bool>(state[11]), nb::cast<bool>(state[12]), nb::cast<bool>(state[13]),
+            nb::cast<SizeType32>(state[14]), std::nullopt, nb::cast<bool>(state[15]), nb::cast<bool>(state[16]),
+            nb::cast<std::optional<std::string>>(state[17]));
     };
     nb::class_<tle::KvCacheConfig>(m, "KvCacheConfig")
         .def(nb::init<bool, std::optional<SizeType32> const&, std::optional<std::vector<SizeType32>> const&,
                  std::optional<SizeType32> const&, std::optional<float> const&, std::optional<size_t> const&, bool,
-                 std::optional<float> const&, std::optional<tle::RetentionPriority>, size_t const&, bool, bool, bool,
-                 SizeType32, std::optional<RuntimeDefaults> const&>(),
+                 std::optional<float> const&, std::optional<tle::RetentionPriority>,
+                 std::optional<tle::RetentionPriority>, size_t const&, bool, bool, bool, SizeType32,
+                 std::optional<RuntimeDefaults> const&, bool, bool, std::optional<std::string> const&>(),
             nb::arg("enable_block_reuse") = true, nb::arg("max_tokens") = nb::none(),
             nb::arg("max_attention_window") = nb::none(), nb::arg("sink_token_length") = nb::none(),
             nb::arg("free_gpu_memory_fraction") = nb::none(), nb::arg("host_cache_size") = nb::none(),
             nb::arg("onboard_blocks") = true, nb::arg("cross_kv_cache_fraction") = nb::none(),
-            nb::arg("secondary_offload_min_priority") = nb::none(), nb::arg("event_buffer_max_size") = 0, nb::kw_only(),
+            nb::arg("secondary_offload_min_priority") = nb::none(),
+            nb::arg("tertiary_offload_min_priority") = nb::none(), nb::arg("event_buffer_max_size") = 0, nb::kw_only(),
             nb::arg("enable_partial_reuse") = true, nb::arg("copy_on_partial_reuse") = true, nb::arg("use_uvm") = false,
-            nb::arg("attention_dp_events_gather_period_ms") = 5, nb::arg("runtime_defaults") = nb::none())
+            nb::arg("attention_dp_events_gather_period_ms") = 5, nb::arg("runtime_defaults") = nb::none(),
+            nb::arg("enable_cpu_tier") = true, nb::arg("enable_disk_tier") = false,
+            nb::arg("directory_path") = nb::none())
         .def_prop_rw(
             "enable_block_reuse", &tle::KvCacheConfig::getEnableBlockReuse, &tle::KvCacheConfig::setEnableBlockReuse)
         .def_prop_rw("max_tokens", &tle::KvCacheConfig::getMaxTokens, &tle::KvCacheConfig::setMaxTokens)
@@ -154,6 +161,8 @@ void initConfigBindings(nb::module_& m)
             &tle::KvCacheConfig::setCrossKvCacheFraction)
         .def_prop_rw("secondary_offload_min_priority", &tle::KvCacheConfig::getSecondaryOffloadMinPriority,
             &tle::KvCacheConfig::setSecondaryOffloadMinPriority)
+        .def_prop_rw("tertiary_offload_min_priority", &tle::KvCacheConfig::getTertiaryOffloadMinPriority,
+            &tle::KvCacheConfig::setTertiaryOffloadMinPriority)
         .def_prop_rw("event_buffer_max_size", &tle::KvCacheConfig::getEventBufferMaxSize,
             &tle::KvCacheConfig::setEventBufferMaxSize)
         .def_prop_rw("enable_partial_reuse", &tle::KvCacheConfig::getEnablePartialReuse,
@@ -163,6 +172,9 @@ void initConfigBindings(nb::module_& m)
         .def_prop_rw("use_uvm", &tle::KvCacheConfig::getUseUvm, &tle::KvCacheConfig::setUseUvm)
         .def_prop_rw("attention_dp_events_gather_period_ms", &tle::KvCacheConfig::getAttentionDpEventsGatherPeriodMs,
             &tle::KvCacheConfig::setAttentionDpEventsGatherPeriodMs)
+        .def_prop_rw("enable_cpu_tier", &tle::KvCacheConfig::getEnableCPUTier, &tle::KvCacheConfig::setEnableCPUTier)
+        .def_prop_rw("enable_disk_tier", &tle::KvCacheConfig::getEnableDiskTier, &tle::KvCacheConfig::setEnableDiskTier)
+        .def_prop_rw("directory_path", &tle::KvCacheConfig::getDirectoryPath, &tle::KvCacheConfig::setDirectoryPath)
         .def("fill_empty_fields_from_runtime_defaults", &tle::KvCacheConfig::fillEmptyFieldsFromRuntimeDefaults)
         .def("__getstate__", kvCacheConfigGetstate)
         .def("__setstate__", kvCacheConfigSetstate);

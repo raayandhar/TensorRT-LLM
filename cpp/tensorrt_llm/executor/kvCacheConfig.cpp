@@ -26,18 +26,23 @@ KvCacheConfig::KvCacheConfig(bool enableBlockReuse, std::optional<SizeType32> co
     std::optional<SizeType32> const& sinkTokenLength, std::optional<FloatType> const& freeGpuMemoryFraction,
     std::optional<size_t> const& hostCacheSize, bool onboardBlocks,
     std::optional<FloatType> const& crossKvCacheFraction, std::optional<RetentionPriority> secondaryOffloadMinPriority,
-    size_t eventBufferMaxSize, bool enablePartialReuse, bool copyOnPartialReuse, bool useUvm,
-    SizeType32 attentionDpEventsGatherPeriodMs,
-    std::optional<tensorrt_llm::runtime::RuntimeDefaults> const& runtimeDefaults)
+    std::optional<RetentionPriority> tertiaryOffloadMinPriority, size_t eventBufferMaxSize, bool enablePartialReuse,
+    bool copyOnPartialReuse, bool useUvm, SizeType32 attentionDpEventsGatherPeriodMs,
+    std::optional<tensorrt_llm::runtime::RuntimeDefaults> const& runtimeDefaults, bool enableCPUTier,
+    bool enableDiskTier, std::optional<std::string> const& directoryPath)
     : mEnableBlockReuse(enableBlockReuse)
     , mHostCacheSize(hostCacheSize)
     , mOnboardBlocks(onboardBlocks)
     , mSecondaryOffloadMinPriority(secondaryOffloadMinPriority)
+    , mTertiaryOffloadMinPriority(tertiaryOffloadMinPriority)
     , mEventBufferMaxSize{eventBufferMaxSize}
     , mEnablePartialReuse{enablePartialReuse}
     , mCopyOnPartialReuse{copyOnPartialReuse}
     , mUseUvm{useUvm}
     , mAttentionDpEventsGatherPeriodMs(attentionDpEventsGatherPeriodMs)
+    , mEnableCPUTier(enableCPUTier)
+    , mEnableDiskTier(enableDiskTier)
+    , mDirectoryPath(directoryPath)
 {
     if (maxTokens)
     {
@@ -122,6 +127,11 @@ std::optional<RetentionPriority> KvCacheConfig::getSecondaryOffloadMinPriority()
     return mSecondaryOffloadMinPriority;
 }
 
+std::optional<RetentionPriority> KvCacheConfig::getTertiaryOffloadMinPriority() const
+{
+    return mTertiaryOffloadMinPriority;
+}
+
 size_t KvCacheConfig::getEventBufferMaxSize() const
 {
     return mEventBufferMaxSize;
@@ -135,6 +145,21 @@ bool KvCacheConfig::getUseUvm() const
 SizeType32 KvCacheConfig::getAttentionDpEventsGatherPeriodMs() const
 {
     return mAttentionDpEventsGatherPeriodMs;
+}
+
+bool KvCacheConfig::getEnableCPUTier() const
+{
+    return mEnableCPUTier;
+}
+
+bool KvCacheConfig::getEnableDiskTier() const
+{
+    return mEnableDiskTier;
+}
+
+std::optional<std::string> KvCacheConfig::getDirectoryPath() const
+{
+    return mDirectoryPath;
 }
 
 void KvCacheConfig::setEnableBlockReuse(bool enableBlockReuse)
@@ -203,6 +228,11 @@ void KvCacheConfig::setSecondaryOffloadMinPriority(std::optional<RetentionPriori
     mSecondaryOffloadMinPriority = secondaryOffloadMinPriority;
 }
 
+void KvCacheConfig::setTertiaryOffloadMinPriority(std::optional<RetentionPriority> tertiaryOffloadMinPriority)
+{
+    mTertiaryOffloadMinPriority = tertiaryOffloadMinPriority;
+}
+
 void KvCacheConfig::setEventBufferMaxSize(size_t eventBufferMaxSize)
 {
     mEventBufferMaxSize = eventBufferMaxSize;
@@ -217,6 +247,21 @@ void KvCacheConfig::setAttentionDpEventsGatherPeriodMs(SizeType32 attentionDpEve
 {
     TLLM_CHECK(attentionDpEventsGatherPeriodMs > 0);
     mAttentionDpEventsGatherPeriodMs = attentionDpEventsGatherPeriodMs;
+}
+
+void KvCacheConfig::setEnableCPUTier(bool enableCPUTier)
+{
+    mEnableCPUTier = enableCPUTier;
+}
+
+void KvCacheConfig::setEnableDiskTier(bool enableDiskTier)
+{
+    mEnableDiskTier = enableDiskTier;
+}
+
+void KvCacheConfig::setDirectoryPath(std::optional<std::string> const& directoryPath)
+{
+    mDirectoryPath = directoryPath;
 }
 
 void KvCacheConfig::fillEmptyFieldsFromRuntimeDefaults(tensorrt_llm::runtime::RuntimeDefaults const& runtimeDefaults)
