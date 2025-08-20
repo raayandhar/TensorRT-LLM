@@ -31,14 +31,30 @@ auto const kMaxPriority = executor::KvCacheRetentionConfig::kMaxRetentionPriorit
 
 auto const kDefaultPriority = executor::KvCacheRetentionConfig::kDefaultRetentionPriority;
 executor::RetentionPriority const kDefaultSecondaryOffloadMinPriority = 30;
+executor::RetentionPriority const kDefaultTertiaryOffloadMinPriority = 20; // IDK make up some number
 
-int const kNumCacheLevels = 2;
+int const kNumCacheLevels = 3;
 
 namespace
 {
 SizeType32 getCacheLevel(BlockPtr const& block)
 {
-    return block->isPrimary() ? 0 : 1;
+    if (block->isPrimary())
+    {
+        return 0;
+    }
+    else if (block->isSecondary())
+    {
+        return 1;
+    }
+    else if (block->isTertiary())
+    {
+        return 2;
+    }
+    else
+    {
+        TLLM_THROW("Unknown cache level for block");
+    }
 }
 
 SizeType32 getPriorityIdx(executor::RetentionPriority priority)
@@ -48,7 +64,8 @@ SizeType32 getPriorityIdx(executor::RetentionPriority priority)
 } // namespace
 
 void LRUEvictionPolicy::initialize(std::vector<BlockPtr>& mAllBlocksById, std::vector<SizeType32> sizes,
-    std::optional<executor::RetentionPriority> secondaryOffloadMinPriority)
+    std::optional<executor::RetentionPriority> secondaryOffloadMinPriority,
+    std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority)
 {
     SizeType32 startIdx = 0;
 
@@ -75,21 +92,27 @@ void LRUEvictionPolicy::initialize(std::vector<BlockPtr>& mAllBlocksById, std::v
     mNumFreeBlocksPerLevel = sizes;
 
     mSecondaryOffloadMinPriority = secondaryOffloadMinPriority.value_or(kDefaultSecondaryOffloadMinPriority);
+    mTertiaryOffloadMinPriority = tertiaryOffloadMinPriority.value_or(kDefaultTertiaryOffloadMinPriority);
 }
 
 bool LRUEvictionPolicy::verifyQueueIntegrity()
 {
     bool queueCompromised = false;
-    for (SizeType32 cacheLevel = 0; cacheLevel < 2; cacheLevel++)
+    for (SizeType32 cacheLevel = 0; cacheLevel < kNumCacheLevels; cacheLevel++)
     {
         for (SizeType32 level = 0; level < kMaxPriority - kMinPriority + 1; level++)
         {
             for (auto const& block : mFreeQueues[cacheLevel][level])
             {
-                if ((cacheLevel == 0 && !block->isPrimary()) || (cacheLevel == 1 && block->isPrimary()))
+                SizeType32 expectedCacheLevel = getCacheLevel(block);
+                if (cacheLevel != expectedCacheLevel)
                 {
-                    TLLM_LOG_WARNING("Found %s block (id %d) at cacheLevel %d",
-                        block->isPrimary() ? "primary" : "secondary", block->getBlockId(), cacheLevel);
+                    char const* blockType = block->isPrimary() ? "primary"
+                        : block->isSecondary()                 ? "secondary"
+                        : block->isTertiary()                  ? "tertiary"
+                                                               : "unknown";
+                    TLLM_LOG_WARNING("Found %s block (id %d) at cacheLevel %d, expected %d", blockType,
+                        block->getBlockId(), cacheLevel, expectedCacheLevel);
                     queueCompromised = true;
                 }
                 if (block->hasRefs())
@@ -118,7 +141,19 @@ std::tuple<BlockPtr, bool> LRUEvictionPolicy::getFreeBlock(SizeType32 cacheLevel
             // It's possible to have a primary block with children in secondary memory. We handle this
             // by freeing all descendants in WindowBlockManager::getFreeBlock. This is done either by
             // offloading (preferred method) or explicitly.
-            return std::make_tuple(block, cacheLevel == 0 && level >= mSecondaryOffloadMinPriority);
+            bool canOffload = false;
+            if (cacheLevel == 0 && level >= mSecondaryOffloadMinPriority)
+            {
+                // Primary blocks can be offloaded to secondary
+                canOffload = true;
+            }
+            else if (cacheLevel == 1 && level >= mTertiaryOffloadMinPriority)
+            {
+                // Secondary blocks can be offloaded to tertiary
+                canOffload = true;
+            }
+            // Tertiary blocks (cacheLevel == 2) cannot be offloaded further
+            return std::make_tuple(block, canOffload);
         }
     }
     TLLM_THROW("No free block found. This shouldn't happen!");

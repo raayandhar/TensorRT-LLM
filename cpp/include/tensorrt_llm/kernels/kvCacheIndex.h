@@ -29,24 +29,65 @@ class KVCacheIndex
 public:
     using UnderlyingType = std::int32_t;
 
-    // Flag indicating KVCacheIndex refers to secondary pool
-    static constexpr UnderlyingType kSecondaryPoolFlag = static_cast<UnderlyingType>(1)
-        << (8 * sizeof(UnderlyingType) - 1);
+    enum class PoolType : UnderlyingType
+    {
+        kPrimary = 0,   // Fast GPU memory
+        kSecondary = 1, // DRAM / Disk
+        kTertiary = 2,  // Disk
+        // We could make a reserved pool type in the future?
+        // We should never do GPU <-> Disk <-> DRAM. That's my working assumption, because I don't know why we would
+        // ever do that.
+    };
 
-    explicit KVCacheIndex(UnderlyingType value, bool isSecondary = false)
-        : value{isSecondary ? value | kSecondaryPoolFlag : value}
+    // Pool type encoding uses top 2 bits now instead 1 bit.
+    // The more I work on this the less I like it, or at least the less I like the way I'm doing it *_*
+    // Have to be careful here because changes here can fail silently and be impossible to debug.
+    static constexpr UnderlyingType kPoolTypeBits = 2;
+    static constexpr UnderlyingType kPoolTypeShift = 8 * sizeof(UnderlyingType) - kPoolTypeBits;
+    static constexpr UnderlyingType kPoolTypeMask = ((1 << kPoolTypeBits) - 1) << kPoolTypeShift;
+    static constexpr UnderlyingType kIndexMask = ~kPoolTypeMask;
+
+    // This might be the easiest for now, basically keep the old stuff but maybe should be changed.
+    // I don't like the way I'm doing it :((
+    static constexpr UnderlyingType kSecondaryPoolFlag = static_cast<UnderlyingType>(PoolType::kSecondary)
+        << kPoolTypeShift;
+
+    explicit KVCacheIndex(UnderlyingType value, PoolType poolType = PoolType::kPrimary)
+        : value{(value & kIndexMask) | (static_cast<UnderlyingType>(poolType) << kPoolTypeShift)}
     {
         TLLM_CHECK_DEBUG(value >= 0);
+        TLLM_CHECK_DEBUG((value & kPoolTypeMask) == 0); // Ensure no pool bits in input value
+    }
+
+    // Going to keep this for now.
+    explicit KVCacheIndex(UnderlyingType value, bool isSecondary)
+        : KVCacheIndex(value, isSecondary ? PoolType::kSecondary : PoolType::kPrimary)
+    {
     }
 
     __host__ __device__ [[nodiscard]] UnderlyingType get() const
     {
-        return value & (~kSecondaryPoolFlag);
+        return value & kIndexMask;
+    }
+
+    __host__ __device__ [[nodiscard]] PoolType getPoolType() const
+    {
+        return static_cast<PoolType>((value & kPoolTypeMask) >> kPoolTypeShift);
     }
 
     __host__ __device__ [[nodiscard]] bool isPrimary() const
     {
-        return (value & kSecondaryPoolFlag) == 0;
+        return getPoolType() == PoolType::kPrimary;
+    }
+
+    __host__ __device__ [[nodiscard]] bool isSecondary() const
+    {
+        return getPoolType() == PoolType::kSecondary;
+    }
+
+    __host__ __device__ [[nodiscard]] bool isTertiary() const
+    {
+        return getPoolType() == PoolType::kTertiary;
     }
 
 private:

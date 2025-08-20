@@ -432,9 +432,10 @@ void tb::kv_cache_manager::KVCacheManagerBindings::initBindings(py::module_& m)
 
     py::classh<tbk::KVCacheManager, tbk::BaseKVCacheManager>(m, "KVCacheManager")
         .def(py::init<std::vector<SizeType32> const&, SizeType32, SizeType32,
-                 std::map<SizeType32, std::tuple<SizeType32, SizeType32>> const&, SizeType32, SizeType32,
+                 std::map<SizeType32, std::tuple<SizeType32, SizeType32, SizeType32>> const&, SizeType32, SizeType32,
                  std::vector<SizeType32> const&, std::optional<tbk::TempAttentionWindowInputs> const&,
-                 nvinfer1::DataType, SizeType32, bool, int64_t, bool, bool, tbk::CacheType,
+                 nvinfer1::DataType, SizeType32, int64_t, std::optional<SizeType32>, bool, bool, tbk::CacheType,
+                 std::optional<tensorrt_llm::executor::RetentionPriority>,
                  std::optional<tensorrt_llm::executor::RetentionPriority>, std::shared_ptr<tbk::KVCacheEventManager>,
                  bool, bool>(),
             py::arg("num_kv_heads_per_layer"), py::arg("size_per_head"), py::arg("tokens_per_block"),
@@ -443,7 +444,8 @@ void tb::kv_cache_manager::KVCacheManagerBindings::initBindings(py::module_& m)
             py::arg("sink_token_length"), py::arg("stream"), py::arg("max_sequence_length"),
             py::arg("enable_block_reuse") = false, py::arg("onboard_blocks") = true,
             py::arg_v("cache_type", tbk::CacheType::kSELF, "bindings.internal.batch_manager.CacheType.SELF"),
-            py::arg("secondary_offload_min_priority") = std::nullopt, py::arg("event_manager") = nullptr,
+            py::arg("secondary_offload_min_priority") = std::nullopt,
+            py::arg("tertiary_offload_min_priority") = std::nullopt, py::arg("event_manager") = nullptr,
             py::arg("enable_partial_reuse") = true, py::arg("copy_on_partial_reuse") = true);
 }
 

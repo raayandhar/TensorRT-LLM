@@ -374,7 +374,7 @@ private:
         return static_cast<bool>(mGuidedDecoder);
     }
 
-    using BlocksPerWindow = std::map<SizeType32, std::tuple<SizeType32, SizeType32>>;
+    using BlocksPerWindow = std::map<SizeType32, std::tuple<SizeType32, SizeType32, SizeType32>>;
     /// @brief Based on the KV-cache manager's capacity and configuration, we adjust the maximum supported attention
     /// window.
     ///

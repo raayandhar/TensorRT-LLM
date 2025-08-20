@@ -999,10 +999,18 @@ public:
         std::optional<FloatType> const& freeGpuMemoryFraction = std::nullopt,
         std::optional<size_t> const& hostCacheSize = std::nullopt, bool onboardBlocks = true,
         std::optional<FloatType> const& crossKvCacheFraction = std::nullopt,
-        std::optional<RetentionPriority> secondaryOffloadMinPriority = std::nullopt, size_t eventBufferMaxSize = 0,
+        std::optional<RetentionPriority> secondaryOffloadMinPriority = std::nullopt,
+        // Since we are expending to have some sort of cascade offload of tiers, we probably need this...
+        std::optional<RetentionPriority> tertiaryOffloadMinPriority = std::nullopt, size_t eventBufferMaxSize = 0,
         bool enablePartialReuse = true, bool copyOnPartialReuse = true, bool useUvm = false,
         SizeType32 attentionDpEventsGatherPeriodMs = 5,
-        std::optional<tensorrt_llm::runtime::RuntimeDefaults> const& runtimeDefaults = std::nullopt);
+        std::optional<tensorrt_llm::runtime::RuntimeDefaults> const& runtimeDefaults = std::nullopt,
+        // This is a bit ugly I think. I'm not sure of the best way to handle this, so I'm leaving it here for now.
+        bool enableCPUTier = true, bool enableDiskTier = false,
+        // The directoryPath parameter is inspired by diskPath from the KVC python refactor doc,
+        // and we can override it based on the request's directory instead. The general thought I had
+        // was that KvCacheRetentionConfig is per request, so these "global" settings should be here...?
+        std::optional<std::string> const& directoryPath = std::nullopt);
 
     [[nodiscard]] bool getEnableBlockReuse() const;
     [[nodiscard]] bool getEnablePartialReuse() const;
@@ -1015,9 +1023,13 @@ public:
     [[nodiscard]] std::optional<size_t> getHostCacheSize() const;
     [[nodiscard]] bool getOnboardBlocks() const;
     [[nodiscard]] std::optional<RetentionPriority> getSecondaryOffloadMinPriority() const;
+    [[nodiscard]] std::optional<RetentionPriority> getTertiaryOffloadMinPriority() const;
     [[nodiscard]] size_t getEventBufferMaxSize() const;
     [[nodiscard]] bool getUseUvm() const;
     [[nodiscard]] SizeType32 getAttentionDpEventsGatherPeriodMs() const;
+    [[nodiscard]] bool getEnableCPUTier() const;
+    [[nodiscard]] bool getEnableDiskTier() const;
+    [[nodiscard]] std::optional<std::string> getDirectoryPath() const;
 
     void setEnableBlockReuse(bool enableBlockReuse);
     void setEnablePartialReuse(bool enablePartialReuse);
@@ -1030,9 +1042,13 @@ public:
     void setHostCacheSize(size_t hostCacheSize);
     void setOnboardBlocks(bool onboardBlocks);
     void setSecondaryOffloadMinPriority(std::optional<RetentionPriority> secondaryOffloadMinPriority);
+    void setTertiaryOffloadMinPriority(std::optional<RetentionPriority> tertiaryOffloadMinPriority);
     void setEventBufferMaxSize(size_t eventBufferMaxSize);
     void setUseUvm(bool useUvm);
     void setAttentionDpEventsGatherPeriodMs(SizeType32 attentionDpEventsGatherPeriodMs);
+    void setEnableCPUTier(bool enableCPUTier);
+    void setEnableDiskTier(bool enableDiskTier);
+    void setDirectoryPath(std::optional<std::string> const& directoryPath);
 
     void fillEmptyFieldsFromRuntimeDefaults(tensorrt_llm::runtime::RuntimeDefaults const& runtimeDefaults);
 
@@ -1077,6 +1093,9 @@ private:
     /// @brief Only blocks with priority > mSecondaryOfflineMinPriority can be offloaded to secondary memory.
     std::optional<RetentionPriority> mSecondaryOffloadMinPriority;
 
+    /// @brief Only blocks with priority > mTertiaryOffloadMinPriority can be offloaded to tertiary memory.
+    std::optional<RetentionPriority> mTertiaryOffloadMinPriority;
+
     /// @brief Max size of the KV cache event buffer
     size_t mEventBufferMaxSize;
 
@@ -1091,6 +1110,15 @@ private:
 
     /// @brief The period in milliseconds to gather attention DP events across ranks
     SizeType32 mAttentionDpEventsGatherPeriodMs;
+
+    /// @brief Whether to enable the CPU tier.
+    bool mEnableCPUTier;
+
+    /// @brief Whether to enable the disk tier.
+    bool mEnableDiskTier;
+
+    /// @brief The directory path to use for the disk tier.
+    std::optional<std::string> mDirectoryPath;
 };
 
 /// @brief Configuration class for the runtime perf knobs

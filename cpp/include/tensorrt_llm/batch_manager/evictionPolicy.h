@@ -34,7 +34,10 @@ public:
     // TODO(TRTLLM-1564): Don't use a separate `initialize` function. Ensure eviction policies can't be in-between a
     // state of construction and initialization.
     virtual void initialize(std::vector<BlockPtr>& mAllBlocksById, std::vector<SizeType32> sizes,
-        std::optional<executor::RetentionPriority> secondaryOffloadMinPriority)
+        std::optional<executor::RetentionPriority> secondaryOffloadMinPriority,
+        // I'm thinking std::nullopt should be the default here, but I don't think I really understand the code if it's
+        // not the default for the secondary offload min priority...
+        std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority = std::nullopt)
         = 0;
 
     /// @brief Get a free block from the specified cache level
@@ -71,7 +74,8 @@ class LRUEvictionPolicy : public BaseEvictionPolicy
 {
 public:
     void initialize(std::vector<BlockPtr>& mAllBlocksById, std::vector<SizeType32> sizes,
-        std::optional<executor::RetentionPriority> secondaryOffloadMinPriority) override;
+        std::optional<executor::RetentionPriority> secondaryOffloadMinPriority,
+        std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority = std::nullopt) override;
     std::tuple<BlockPtr, bool> getFreeBlock(SizeType32 cacheLevel) override;
 
     void releaseBlock(BlockPtr block) override;
@@ -105,6 +109,8 @@ private:
     std::vector<SizeType32> mNumFreeBlocksPerLevel;
     // Secondary offload threshold. Blocks below this priority won't be evicted.
     executor::RetentionPriority mSecondaryOffloadMinPriority;
+    // Tertiary offload threshold. Blocks below this priority won't be evicted.
+    executor::RetentionPriority mTertiaryOffloadMinPriority;
     // Heap of block times
     std::set<BlockPtr, ExpiringBlockComparator> mExpiringBlockHeap;
 };

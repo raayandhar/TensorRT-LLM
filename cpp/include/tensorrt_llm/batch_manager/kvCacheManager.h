@@ -70,7 +70,7 @@ using FreeBlocksQueue = std::list<BlockPtr>;
 using UniqueToken = tensorrt_llm::runtime::UniqueToken;
 using VecUniqueTokens = tensorrt_llm::runtime::VecUniqueTokens;
 using LoraTaskIdType = tensorrt_llm::runtime::LoraTaskIdType;
-using BlocksPerWindow = std::map<SizeType32, std::tuple<SizeType32, SizeType32>>;
+using BlocksPerWindow = std::map<SizeType32, std::tuple<SizeType32, SizeType32, SizeType32>>;
 
 // Type alias for multimodal hash key (hash array + start offset)
 using MmKey = std::pair<std::array<uint8_t, 32>, SizeType32>;
@@ -218,6 +218,10 @@ public:
     [[nodiscard]] kernels::KVCacheIndex::UnderlyingType getMemoryPoolBlockIndex() const;
 
     [[nodiscard]] bool isPrimary() const;
+
+    [[nodiscard]] bool isSecondary() const;
+
+    [[nodiscard]] bool isTertiary() const;
 
     void swapMemoryPoolBlockOffset(std::shared_ptr<KVCacheBlock> otherBlock);
 
@@ -493,16 +497,18 @@ public:
     SizeType32 quantSize;
     SizeType32 blockSize;
 
-    // Memory pools. Primary is fast memory, secondary is slower memory used for offloading.
+    // Memory pools. Primary is fast memory, secondary is slower memory used for offloading, tertiary is slowest (disk).
     runtime::ITensor::SharedPtr primaryPtr;
     runtime::ITensor::SharedPtr secondaryPtr;
+    runtime::ITensor::SharedPtr tertiaryPtr;
 
     // FP4 KV caches have extra pools that contain second level scales for dequantization.
     bool containsBlockScales;
 
     KVCacheBlockPool(SizeType32 numLayers, SizeType32 kvFactor, SizeType32 numKvHeads, SizeType32 sizePerHead,
         SizeType32 tokensPerBlock, SizeType32 quantSize, runtime::ITensor::SharedPtr primaryPtr = nullptr,
-        runtime::ITensor::SharedPtr secondaryPtr = nullptr, bool containsBlockScales = false)
+        runtime::ITensor::SharedPtr secondaryPtr = nullptr, runtime::ITensor::SharedPtr tertiaryPtr = nullptr,
+        bool containsBlockScales = false)
         : numLayers(numLayers)
         , kvFactor(kvFactor)
         , numKvHeads(numKvHeads)
@@ -512,6 +518,7 @@ public:
         , blockSize((numKvHeads * sizePerHead * tokensPerBlock) / quantSize)
         , primaryPtr(std::move(primaryPtr))
         , secondaryPtr(std::move(secondaryPtr))
+        , tertiaryPtr(std::move(tertiaryPtr))
         , containsBlockScales(containsBlockScales)
     {
     }
@@ -547,8 +554,10 @@ public:
     explicit WindowBlockManager(nvinfer1::DataType dtype, SizeType32 windowSize,
         std::vector<SizeType32> const& managedLayers, std::vector<SizeType32> const& numKvHeadsPerLayer,
         SizeType32 sizePerHead, SizeType32 tokensPerBlock, SizeType32 blocksInPrimaryPool,
-        SizeType32 blocksInSecondaryPool, SizeType32 maxNumSequences, std::shared_ptr<runtime::CudaStream> stream,
-        bool onboardBlocks, CacheType cacheType, std::optional<executor::RetentionPriority> secondaryOffloadMinPriority,
+        SizeType32 blocksInSecondaryPool, SizeType32 blocksInTertiaryPool, SizeType32 maxNumSequences,
+        std::shared_ptr<runtime::CudaStream> stream, bool onboardBlocks, CacheType cacheType,
+        std::optional<executor::RetentionPriority> secondaryOffloadMinPriority,
+        std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority,
         std::shared_ptr<KVCacheEventManager> eventManager, bool enablePartialReuse, bool copyOnPartialReuse,
         BaseLoopbackAgent* loopbackAgent = nullptr);
 
@@ -795,6 +804,7 @@ private:
     // Number of blocks in pools
     SizeType32 mNumPrimaryBlocks;
     SizeType32 mNumSecondaryBlocks;
+    SizeType32 mNumTertiaryBlocks;
 
     // List of allocated blocks for each sequences
     std::unordered_map<LlmRequest::RequestIdType, std::vector<BlockPtr>> mAllocatedBlocksPerSeq;
@@ -872,6 +882,7 @@ public:
         std::optional<TempAttentionWindowInputs> const& tempAttentionWindowInputs, nvinfer1::DataType dtype,
         SizeType32 sinkBubbleLength, bool onboardBlocks, CacheType cacheType = CacheType::kSELF,
         std::optional<executor::RetentionPriority> secondaryOffloadMinPriority = std::nullopt,
+        std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority = std::nullopt,
         std::shared_ptr<KVCacheEventManager> eventManager = nullptr, bool enablePartialReuse = true,
         bool copyOnPartialReuse = true, bool multiThreadReuse = false);
 
@@ -1385,6 +1396,7 @@ public:
         SizeType32 sinkTokenLength, CudaStreamPtr stream, std::optional<SizeType32> maxSequenceLength,
         bool enableBlockReuse = false, bool onboardBlocks = true, CacheType cacheType = CacheType::kSELF,
         std::optional<executor::RetentionPriority> secondaryOffloadMinPriority = std::nullopt,
+        std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority = std::nullopt,
         std::shared_ptr<KVCacheEventManager> eventManager = nullptr, bool enablePartialReuse = true,
         bool copyOnpartialReuse = true);
 
@@ -1395,6 +1407,7 @@ public:
         SizeType32 sinkTokenLength, int64_t stream, std::optional<SizeType32> maxSequenceLength,
         bool enableBlockReuse = false, bool onboardBlocks = true, CacheType cacheType = CacheType::kSELF,
         std::optional<executor::RetentionPriority> secondaryOffloadMinPriority = std::nullopt,
+        std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority = std::nullopt,
         std::shared_ptr<KVCacheEventManager> eventManager = nullptr, bool enablePartialReuse = true,
         bool copyOnpartialReuse = true);
 
@@ -1405,6 +1418,7 @@ public:
         SizeType32 sinkTokenLength, CudaStreamPtr stream, std::optional<SizeType32> maxSequenceLength,
         bool enableBlockReuse = true, bool onboardBlocks = true, CacheType cacheType = CacheType::kSELF,
         std::optional<executor::RetentionPriority> secondaryOffloadMinPriority = std::nullopt,
+        std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority = std::nullopt,
         std::shared_ptr<KVCacheEventManager> eventManager = nullptr, bool enablePartialReuse = true,
         bool copyOnpartialReuse = true);
 
@@ -1414,7 +1428,10 @@ public:
         std::optional<TempAttentionWindowInputs> const& tempAttentionWindowInputs, nvinfer1::DataType dtype,
         SizeType32 sinkTokenLength, int64_t stream, std::optional<SizeType32> maxSequenceLength,
         bool enableBlockReuse = false, bool onboardBlocks = true, CacheType cacheType = CacheType::kSELF,
-        bool enablePartialReuse = true, bool copyOnpartialReuse = true);
+        std::optional<executor::RetentionPriority> secondaryOffloadMinPriority = std::nullopt,
+        std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority = std::nullopt,
+        std::shared_ptr<KVCacheEventManager> eventManager = nullptr, bool enablePartialReuse = true,
+        bool copyOnpartialReuse = true);
 
     ~KVCacheManager() override = default;
 

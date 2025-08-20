@@ -1161,13 +1161,18 @@ KvCacheConfig Serialization::deserializeKvCacheConfig(std::istream& is)
     auto onboardBlocks = su::deserialize<bool>(is);
     auto crossKvCacheFraction = su::deserialize<std::optional<FloatType>>(is);
     auto secondaryOffloadMinPriority = su::deserialize<std::optional<executor::RetentionPriority>>(is);
+    auto tertiaryOffloadMinPriority = su::deserialize<std::optional<executor::RetentionPriority>>(is);
     auto eventBufferMaxSize = su::deserialize<size_t>(is);
     auto useUvm = su::deserialize<bool>(is);
     auto attentionDpEventsGatherPeriodMs = su::deserialize<SizeType32>(is);
+    auto enableCPUTier = su::deserialize<bool>(is);
+    auto enableDiskTier = su::deserialize<bool>(is);
+    auto directoryPath = su::deserialize<std::optional<std::string>>(is);
 
     return KvCacheConfig{enableBlockReuse, maxTokens, maxAttentionWindowVec, sinkTokenLength, freeGpuMemoryFraction,
-        hostCacheSize, onboardBlocks, crossKvCacheFraction, secondaryOffloadMinPriority, eventBufferMaxSize,
-        enablePartialReuse, copyOnPartialReuse, useUvm, attentionDpEventsGatherPeriodMs};
+        hostCacheSize, onboardBlocks, crossKvCacheFraction, secondaryOffloadMinPriority, tertiaryOffloadMinPriority,
+        eventBufferMaxSize, enablePartialReuse, copyOnPartialReuse, useUvm, attentionDpEventsGatherPeriodMs,
+        std::nullopt, enableCPUTier, enableDiskTier, directoryPath};
 }
 
 void Serialization::serialize(KvCacheConfig const& kvCacheConfig, std::ostream& os)
@@ -1183,9 +1188,13 @@ void Serialization::serialize(KvCacheConfig const& kvCacheConfig, std::ostream& 
     su::serialize(kvCacheConfig.getOnboardBlocks(), os);
     su::serialize(kvCacheConfig.getCrossKvCacheFraction(), os);
     su::serialize(kvCacheConfig.getSecondaryOffloadMinPriority(), os);
+    su::serialize(kvCacheConfig.getTertiaryOffloadMinPriority(), os);
     su::serialize(kvCacheConfig.getEventBufferMaxSize(), os);
     su::serialize(kvCacheConfig.getUseUvm(), os);
     su::serialize(kvCacheConfig.getAttentionDpEventsGatherPeriodMs(), os);
+    su::serialize(kvCacheConfig.getEnableCPUTier(), os);
+    su::serialize(kvCacheConfig.getEnableDiskTier(), os);
+    su::serialize(kvCacheConfig.getDirectoryPath(), os);
 }
 
 size_t Serialization::serializedSize(KvCacheConfig const& kvCacheConfig)
@@ -1203,9 +1212,13 @@ size_t Serialization::serializedSize(KvCacheConfig const& kvCacheConfig)
     totalSize += su::serializedSize(kvCacheConfig.getOnboardBlocks());
     totalSize += su::serializedSize(kvCacheConfig.getCrossKvCacheFraction());
     totalSize += su::serializedSize(kvCacheConfig.getSecondaryOffloadMinPriority());
+    totalSize += su::serializedSize(kvCacheConfig.getTertiaryOffloadMinPriority());
     totalSize += su::serializedSize(kvCacheConfig.getEventBufferMaxSize());
     totalSize += su::serializedSize(kvCacheConfig.getUseUvm());
     totalSize += su::serializedSize(kvCacheConfig.getAttentionDpEventsGatherPeriodMs());
+    totalSize += su::serializedSize(kvCacheConfig.getEnableCPUTier());
+    totalSize += su::serializedSize(kvCacheConfig.getEnableDiskTier());
+    totalSize += su::serializedSize(kvCacheConfig.getDirectoryPath());
     return totalSize;
 }
 

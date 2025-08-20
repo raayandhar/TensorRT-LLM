@@ -547,7 +547,7 @@ void TrtGptModelInflightBatching::reshapeKvTensors(OffsetTableDimensions const& 
     }
 }
 
-using BlocksPerWindow = std::map<SizeType32, std::tuple<SizeType32, SizeType32>>;
+using BlocksPerWindow = std::map<SizeType32, std::tuple<SizeType32, SizeType32, SizeType32>>;
 
 std::pair<BlocksPerWindow, std::vector<SizeType32>>
 TrtGptModelInflightBatching::clampWindowSizesToFitAtLeastOneSequence(
@@ -572,18 +572,19 @@ TrtGptModelInflightBatching::clampWindowSizesToFitAtLeastOneSequence(
     {
         auto const bestCaseBlockRequirements = kv_cache_manager::KVCacheManager::calculateMaxBlockRequirements(
             promptLength, outputLength, sinkTokenLength, windowSize, maxBeamWidth, tokensPerBlock);
-        auto const [numPrimaryBlocks, numSecondaryBlocks] = blocksPerWindow.at(windowSize);
+        auto const [numPrimaryBlocks, numSecondaryBlocks, numTertiaryBlocks] = blocksPerWindow.at(windowSize);
         if (bestCaseBlockRequirements > numPrimaryBlocks)
         {
             auto const newMaxAttentionWindow = KVCacheManager::calculateMaxAttentionWindow(
                 promptLength, outputLength, sinkTokenLength, numPrimaryBlocks, maxBeamWidth, tokensPerBlock);
             newMaxAttentionWindowVec.push_back(newMaxAttentionWindow);
-            newBlocksPerWindow[newMaxAttentionWindow] = std::make_tuple(numPrimaryBlocks, numSecondaryBlocks);
+            newBlocksPerWindow[newMaxAttentionWindow]
+                = std::make_tuple(numPrimaryBlocks, numSecondaryBlocks, numTertiaryBlocks);
         }
         else
         {
             newMaxAttentionWindowVec.push_back(windowSize);
-            newBlocksPerWindow[windowSize] = std::make_tuple(numPrimaryBlocks, numSecondaryBlocks);
+            newBlocksPerWindow[windowSize] = std::make_tuple(numPrimaryBlocks, numSecondaryBlocks, numTertiaryBlocks);
         }
     }
     if (newMaxAttentionWindowVec == getMaxAttentionWindowVec())
@@ -690,6 +691,7 @@ std::unique_ptr<kv_cache_manager::KVCacheManager> TrtGptModelInflightBatching::c
         blocksPerWindow, getMaxNumSequences(), getMaxBeamWidth(), maxAttentionWindowVec, tempAttentionWindowInputs,
         kvDtype, getSinkTokenLen(), mRuntime->getStreamPtr(), std::nullopt, enableBlockReuse,
         kvCacheConfig.getOnboardBlocks(), kvCacheType, kvCacheConfig.getSecondaryOffloadMinPriority(),
+        kvCacheConfig.getTertiaryOffloadMinPriority(),
         kvCacheConfig.getEventBufferMaxSize() > 0
             ? std::make_unique<kv_cache_manager::KVCacheEventManager>(kvCacheConfig.getEventBufferMaxSize())
             : nullptr,

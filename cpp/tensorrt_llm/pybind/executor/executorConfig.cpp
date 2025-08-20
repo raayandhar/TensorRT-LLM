@@ -103,12 +103,13 @@ void initConfigBindings(pybind11::module_& m)
         return py::make_tuple(self.getEnableBlockReuse(), self.getMaxTokens(), self.getMaxAttentionWindowVec(),
             self.getSinkTokenLength(), self.getFreeGpuMemoryFraction(), self.getHostCacheSize(),
             self.getOnboardBlocks(), self.getCrossKvCacheFraction(), self.getSecondaryOffloadMinPriority(),
-            self.getEventBufferMaxSize(), self.getEnablePartialReuse(), self.getCopyOnPartialReuse(), self.getUseUvm(),
-            self.getAttentionDpEventsGatherPeriodMs());
+            self.getTertiaryOffloadMinPriority(), self.getEventBufferMaxSize(), self.getEnablePartialReuse(),
+            self.getCopyOnPartialReuse(), self.getUseUvm(), self.getAttentionDpEventsGatherPeriodMs(),
+            self.getEnableCPUTier(), self.getEnableDiskTier(), self.getDirectoryPath());
     };
     auto kvCacheConfigSetstate = [](py::tuple const& state)
     {
-        if (state.size() != 14)
+        if (state.size() != 18)
         {
             throw std::runtime_error("Invalid state!");
         }
@@ -116,21 +117,26 @@ void initConfigBindings(pybind11::module_& m)
             state[2].cast<std::optional<std::vector<SizeType32>>>(), state[3].cast<std::optional<SizeType32>>(),
             state[4].cast<std::optional<float>>(), state[5].cast<std::optional<size_t>>(), state[6].cast<bool>(),
             state[7].cast<std::optional<float>>(), state[8].cast<std::optional<tle::RetentionPriority>>(),
-            state[9].cast<size_t>(), state[10].cast<bool>(), state[11].cast<bool>(), state[12].cast<bool>(),
-            state[13].cast<SizeType32>());
+            state[9].cast<std::optional<tle::RetentionPriority>>(), state[10].cast<size_t>(), state[11].cast<bool>(),
+            state[12].cast<bool>(), state[13].cast<bool>(), state[14].cast<SizeType32>(), std::nullopt,
+            state[15].cast<bool>(), state[16].cast<bool>(), state[17].cast<std::optional<std::string>>());
     };
     py::class_<tle::KvCacheConfig>(m, "KvCacheConfig")
         .def(py::init<bool, std::optional<SizeType32> const&, std::optional<std::vector<SizeType32>> const&,
                  std::optional<SizeType32> const&, std::optional<float> const&, std::optional<size_t> const&, bool,
-                 std::optional<float> const&, std::optional<tle::RetentionPriority>, size_t const&, bool, bool, bool,
-                 SizeType32, std::optional<RuntimeDefaults> const&>(),
+                 std::optional<float> const&, std::optional<tle::RetentionPriority>,
+                 std::optional<tle::RetentionPriority>, size_t const&, bool, bool, bool, SizeType32,
+                 std::optional<RuntimeDefaults> const&, bool, bool, std::optional<std::string> const&>(),
             py::arg("enable_block_reuse") = true, py::arg("max_tokens") = py::none(),
             py::arg("max_attention_window") = py::none(), py::arg("sink_token_length") = py::none(),
             py::arg("free_gpu_memory_fraction") = py::none(), py::arg("host_cache_size") = py::none(),
             py::arg("onboard_blocks") = true, py::arg("cross_kv_cache_fraction") = py::none(),
-            py::arg("secondary_offload_min_priority") = py::none(), py::arg("event_buffer_max_size") = 0, py::kw_only(),
+            py::arg("secondary_offload_min_priority") = py::none(),
+            py::arg("tertiary_offload_min_priority") = py::none(), py::arg("event_buffer_max_size") = 0, py::kw_only(),
             py::arg("enable_partial_reuse") = true, py::arg("copy_on_partial_reuse") = true, py::arg("use_uvm") = false,
-            py::arg("attention_dp_events_gather_period_ms") = 5, py::arg("runtime_defaults") = py::none())
+            py::arg("attention_dp_events_gather_period_ms") = 5, py::arg("runtime_defaults") = py::none(),
+            py::arg("enable_cpu_tier") = true, py::arg("enable_disk_tier") = false,
+            py::arg("directory_path") = py::none())
         .def_property(
             "enable_block_reuse", &tle::KvCacheConfig::getEnableBlockReuse, &tle::KvCacheConfig::setEnableBlockReuse)
         .def_property("max_tokens", &tle::KvCacheConfig::getMaxTokens, &tle::KvCacheConfig::setMaxTokens)
@@ -146,6 +152,8 @@ void initConfigBindings(pybind11::module_& m)
             &tle::KvCacheConfig::setCrossKvCacheFraction)
         .def_property("secondary_offload_min_priority", &tle::KvCacheConfig::getSecondaryOffloadMinPriority,
             &tle::KvCacheConfig::setSecondaryOffloadMinPriority)
+        .def_property("tertiary_offload_min_priority", &tle::KvCacheConfig::getTertiaryOffloadMinPriority,
+            &tle::KvCacheConfig::setTertiaryOffloadMinPriority)
         .def_property("event_buffer_max_size", &tle::KvCacheConfig::getEventBufferMaxSize,
             &tle::KvCacheConfig::setEventBufferMaxSize)
         .def_property("enable_partial_reuse", &tle::KvCacheConfig::getEnablePartialReuse,
@@ -155,6 +163,10 @@ void initConfigBindings(pybind11::module_& m)
         .def_property("use_uvm", &tle::KvCacheConfig::getUseUvm, &tle::KvCacheConfig::setUseUvm)
         .def_property("attention_dp_events_gather_period_ms", &tle::KvCacheConfig::getAttentionDpEventsGatherPeriodMs,
             &tle::KvCacheConfig::setAttentionDpEventsGatherPeriodMs)
+        .def_property("enable_cpu_tier", &tle::KvCacheConfig::getEnableCPUTier, &tle::KvCacheConfig::setEnableCPUTier)
+        .def_property(
+            "enable_disk_tier", &tle::KvCacheConfig::getEnableDiskTier, &tle::KvCacheConfig::setEnableDiskTier)
+        .def_property("directory_path", &tle::KvCacheConfig::getDirectoryPath, &tle::KvCacheConfig::setDirectoryPath)
         .def("fill_empty_fields_from_runtime_defaults", &tle::KvCacheConfig::fillEmptyFieldsFromRuntimeDefaults)
         .def(py::pickle(kvCacheConfigGetstate, kvCacheConfigSetstate));
 

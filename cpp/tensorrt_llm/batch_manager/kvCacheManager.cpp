@@ -46,7 +46,7 @@ using namespace tensorrt_llm::runtime;
 using namespace tensorrt_llm::batch_manager::kv_cache_manager;
 using namespace tensorrt_llm::batch_manager::eviction_policy;
 
-using BlocksPerWindow = std::map<SizeType32, std::tuple<SizeType32, SizeType32>>;
+using BlocksPerWindow = std::map<SizeType32, std::tuple<SizeType32, SizeType32, SizeType32>>;
 
 namespace
 {
@@ -264,6 +264,16 @@ tk::KVCacheIndex::UnderlyingType KVCacheBlock::getMemoryPoolBlockIndex() const
 bool KVCacheBlock::isPrimary() const
 {
     return mMemoryPoolBlockIndex.isPrimary();
+}
+
+bool KVCacheBlock::isSecondary() const
+{
+    return mMemoryPoolBlockIndex.isSecondary();
+}
+
+bool KVCacheBlock::isTertiary() const
+{
+    return mMemoryPoolBlockIndex.isTertiary();
 }
 
 void KVCacheBlock::swapMemoryPoolBlockOffset(std::shared_ptr<KVCacheBlock> otherBlock)
@@ -505,6 +515,7 @@ BlockManager::BlockManager(std::vector<SizeType32> const& numKvHeadsPerLayer, Si
     std::optional<TempAttentionWindowInputs> const& tempAttentionWindowInputs, nvinfer1::DataType dtype,
     SizeType32 sinkBubbleLength, bool onboardBlocks, CacheType cacheType,
     std::optional<executor::RetentionPriority> secondaryOffloadMinPriority,
+    std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority,
     std::shared_ptr<KVCacheEventManager> eventManager, bool enablePartialReuse, bool copyOnPartialReuse,
     bool multiThreadReuse)
     : mNumLayers{static_cast<SizeType32>(numKvHeadsPerLayer.size())}
@@ -531,12 +542,13 @@ BlockManager::BlockManager(std::vector<SizeType32> const& numKvHeadsPerLayer, Si
         {
             mLayerToWindowSize.at(layerIdx) = windowSize;
         }
-        auto const [allottedPrimaryBlocks, allottedSecondaryBlocks] = blocksPerWindow.at(windowSize);
+        auto const [allottedPrimaryBlocks, allottedSecondaryBlocks, allottedTertiaryBlocks]
+            = blocksPerWindow.at(windowSize);
         TLLM_CHECK(allottedPrimaryBlocks > 0); // You can't have a model with negative primary blocks...
         mWindowBlockManagers.try_emplace(windowSize, dtype, windowSize, layersWithWindowSize, numKvHeadsPerLayer,
-            sizePerHead, tokensPerBlock, allottedPrimaryBlocks, allottedSecondaryBlocks, maxNumSequences, stream,
-            onboardBlocks, cacheType, secondaryOffloadMinPriority, mEventManager, enablePartialReuse,
-            copyOnPartialReuse, mLoopbackAgent.get());
+            sizePerHead, tokensPerBlock, allottedPrimaryBlocks, allottedSecondaryBlocks, allottedTertiaryBlocks,
+            maxNumSequences, stream, onboardBlocks, cacheType, secondaryOffloadMinPriority, tertiaryOffloadMinPriority,
+            mEventManager, enablePartialReuse, copyOnPartialReuse, mLoopbackAgent.get());
     }
 
     auto const numAllPools = getNumPools();
@@ -556,7 +568,8 @@ BlockManager::BlockManager(std::vector<SizeType32> const& numKvHeadsPerLayer, Si
         auto const temporaryAttentionWindow = manager.calculateTemporaryAttentionWindow(tempAttentionWindowInputs);
         // Consider the temporaryAttentionWindow when allocating blocks.
         auto const maxBlocksPerSeq = tc::ceilDiv(maxTokenNum + temporaryAttentionWindow, tokensPerBlock);
-        auto const [allottedPrimaryBlocks, allottedSecondaryBlocks] = blocksPerWindow.at(windowSize);
+        auto const [allottedPrimaryBlocks, allottedSecondaryBlocks, allottedTertiaryBlocks]
+            = blocksPerWindow.at(windowSize);
         mWindowSizeToMetadata[windowSize]
             = WindowSizeMetadata{allottedPrimaryBlocks, allottedSecondaryBlocks, absolutePoolsOffset, numPools,
                 maxTokenNum, maxBlocksPerSeq, manager.getMaxNumBlocks(), temporaryAttentionWindow};
@@ -576,14 +589,16 @@ BlockManager::BlockManager(std::vector<SizeType32> const& numKvHeadsPerLayer, Si
 WindowBlockManager::WindowBlockManager(nvinfer1::DataType dtype, SizeType32 windowSize,
     std::vector<SizeType32> const& managedLayers, std::vector<SizeType32> const& numKvHeadsPerLayer,
     SizeType32 sizePerHead, SizeType32 tokensPerBlock, SizeType32 blocksInPrimaryPool, SizeType32 blocksInSecondaryPool,
-    SizeType32 maxNumSequences, std::shared_ptr<runtime::CudaStream> stream, bool onboardBlocks, CacheType cacheType,
-    std::optional<executor::RetentionPriority> secondaryOffloadMinPriority,
+    SizeType32 blocksInTertiaryPool, SizeType32 maxNumSequences, std::shared_ptr<runtime::CudaStream> stream,
+    bool onboardBlocks, CacheType cacheType, std::optional<executor::RetentionPriority> secondaryOffloadMinPriority,
+    std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority,
     std::shared_ptr<KVCacheEventManager> eventManager, bool enablePartialReuse, bool copyOnPartialReuse,
     BaseLoopbackAgent* loopbackAgent)
     : mDataType{dtype}
     , mWindowSize{windowSize}
     , mNumPrimaryBlocks{blocksInPrimaryPool}
     , mNumSecondaryBlocks{blocksInSecondaryPool}
+    , mNumTertiaryBlocks{blocksInTertiaryPool}
     , mOnboardBlocks(onboardBlocks)
     , mBufferManager{std::move(stream)}
     , mSchedulingNumFreeBlocks{0}
@@ -639,24 +654,32 @@ WindowBlockManager::WindowBlockManager(nvinfer1::DataType dtype, SizeType32 wind
 #endif
 
     // Create free blocks
-    mAllBlocksById.reserve(blocksInPrimaryPool + blocksInSecondaryPool);
+    mAllBlocksById.reserve(blocksInPrimaryPool + blocksInSecondaryPool + blocksInTertiaryPool);
     for (KVCacheBlock::IdType blockId = 0; blockId < blocksInPrimaryPool; ++blockId)
     {
-        mAllBlocksById.emplace_back(std::make_shared<KVCacheBlock>(blockId, tk::KVCacheIndex{blockId, false}));
+        mAllBlocksById.emplace_back(
+            std::make_shared<KVCacheBlock>(blockId, tk::KVCacheIndex{blockId, tk::KVCacheIndex::PoolType::kPrimary}));
     }
     for (KVCacheBlock::IdType blockId = 0; blockId < blocksInSecondaryPool; ++blockId)
     {
+        mAllBlocksById.emplace_back(std::make_shared<KVCacheBlock>(
+            blocksInPrimaryPool + blockId, tk::KVCacheIndex{blockId, tk::KVCacheIndex::PoolType::kSecondary}));
+    }
+    for (KVCacheBlock::IdType blockId = 0; blockId < blocksInTertiaryPool; ++blockId)
+    {
         mAllBlocksById.emplace_back(
-            std::make_shared<KVCacheBlock>(blocksInPrimaryPool + blockId, tk::KVCacheIndex{blockId, true}));
+            std::make_shared<KVCacheBlock>(blocksInPrimaryPool + blocksInSecondaryPool + blockId,
+                tk::KVCacheIndex{blockId, tk::KVCacheIndex::PoolType::kTertiary}));
     }
     mAllocatedBlocksPerSeq.reserve(maxNumSequences);
 
     mEvictionPolicy = std::make_shared<LRUEvictionPolicy>();
-    mEvictionPolicy->initialize(
-        mAllBlocksById, {blocksInPrimaryPool, blocksInSecondaryPool}, secondaryOffloadMinPriority);
+    mEvictionPolicy->initialize(mAllBlocksById, {blocksInPrimaryPool, blocksInSecondaryPool, blocksInTertiaryPool},
+        secondaryOffloadMinPriority, tertiaryOffloadMinPriority);
     if (mEventManager)
     {
-        mEventManager->enqueueCreatedEvent({blocksInPrimaryPool, blocksInSecondaryPool}, mWindowSize);
+        mEventManager->enqueueCreatedEvent(
+            {blocksInPrimaryPool, blocksInSecondaryPool, blocksInTertiaryPool}, mWindowSize);
     }
 }
 
@@ -719,6 +742,7 @@ void WindowBlockManager::createBlockScalePools(SizeType32 quantBlockSize)
             kv_pool.tokensPerBlock, quantBlockSize,
             /*primaryPool=*/nullptr,
             /*secondaryPool=*/nullptr,
+            /*tertiaryPool=*/nullptr,
             /*containsBlockScales=*/true);
     }
 }
@@ -774,6 +798,17 @@ void WindowBlockManager::allocatePools(bool useUvm)
             TLLM_LOG_DEBUG("[%s] Allocating secondary pool with %d blocks for %d layers with %d kv heads",
                 mLogPrefix.c_str(), mNumSecondaryBlocks, pool.numLayers, pool.numKvHeads);
             pool.secondaryPtr = BufferManager::pinned(cacheShapeOffload, poolDtype);
+        }
+
+        if (mNumTertiaryBlocks > 0)
+        {
+            nvinfer1::Dims const cacheshapeTertiary
+                = ITensor::makeShape({mNumTertiaryBlocks, pool.numLayers, mKVFactor, blockSize});
+            TLLM_LOG_DEBUG("[%s] Allocating tertiary pool with %d blocks for %d layers with %d kv heads",
+                mLogPrefix.c_str(), mNumTertiaryBlocks, pool.numLayers, pool.numKvHeads);
+            // For now I will do this in the same way as the secondary pool, we can probably make this disk-backed later
+            // in the offloading process, idk *__*
+            pool.tertiaryPtr = BufferManager::pinned(cacheshapeTertiary, poolDtype);
         }
     }
 }
@@ -1617,11 +1652,15 @@ KVCacheManager::KVCacheManager(SizeType32 numLayers, SizeType32 numKvHeads, Size
     SizeType32 maxBeamWidth, std::vector<SizeType32> const& maxAttentionWindowVec,
     std::optional<TempAttentionWindowInputs> const& tempAttentionWindowInputs, nvinfer1::DataType dtype,
     SizeType32 sinkTokenLength, int64_t stream, std::optional<runtime::SizeType32> maxSequenceLength,
-    bool enableBlockReuse, bool onboardBlocks, CacheType cacheType, bool enablePartialReuse, bool copyOnPartialReuse)
+    bool enableBlockReuse, bool onboardBlocks, CacheType cacheType,
+    std::optional<executor::RetentionPriority> secondaryOffloadMinPriority,
+    std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority,
+    std::shared_ptr<KVCacheEventManager> eventManager, bool enablePartialReuse, bool copyOnPartialReuse)
     : KVCacheManager(std::vector<SizeType32>(numLayers, numKvHeads), sizePerHead, tokensPerBlock, blocksPerWindow,
         maxNumSequences, maxBeamWidth, maxAttentionWindowVec, tempAttentionWindowInputs, dtype, sinkTokenLength,
         std::make_shared<runtime::CudaStream>(reinterpret_cast<cudaStream_t>(stream)), maxSequenceLength,
-        enableBlockReuse, onboardBlocks, cacheType, std::nullopt, nullptr, enablePartialReuse, copyOnPartialReuse)
+        enableBlockReuse, onboardBlocks, cacheType, secondaryOffloadMinPriority, tertiaryOffloadMinPriority,
+        eventManager, enablePartialReuse, copyOnPartialReuse)
 {
 }
 
@@ -1632,12 +1671,13 @@ KVCacheManager::KVCacheManager(std::vector<SizeType32> const& numKvHeadsPerLayer
     SizeType32 sinkTokenLength, int64_t stream, std::optional<runtime::SizeType32> maxSequenceLength,
     bool enableBlockReuse, bool onboardBlocks, CacheType cacheType,
     std::optional<executor::RetentionPriority> secondaryOffloadMinPriority,
+    std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority,
     std::shared_ptr<KVCacheEventManager> eventManager, bool enablePartialReuse, bool copyOnPartialReuse)
     : KVCacheManager(numKvHeadsPerLayer, sizePerHead, tokensPerBlock, blocksPerWindow, maxNumSequences, maxBeamWidth,
         maxAttentionWindowVec, tempAttentionWindowInputs, dtype, sinkTokenLength,
         std::make_shared<runtime::CudaStream>(reinterpret_cast<cudaStream_t>(stream)), maxSequenceLength,
-        enableBlockReuse, onboardBlocks, cacheType, secondaryOffloadMinPriority, eventManager, enablePartialReuse,
-        copyOnPartialReuse)
+        enableBlockReuse, onboardBlocks, cacheType, secondaryOffloadMinPriority, tertiaryOffloadMinPriority,
+        eventManager, enablePartialReuse, copyOnPartialReuse)
 {
 }
 
@@ -1648,6 +1688,7 @@ KVCacheManager::KVCacheManager(std::vector<SizeType32> const& numKvHeadsPerLayer
     SizeType32 sinkTokenLength, CudaStreamPtr stream, std::optional<runtime::SizeType32> maxSequenceLength,
     bool enableBlockReuse, bool onboardBlocks, CacheType cacheType,
     std::optional<executor::RetentionPriority> secondaryOffloadMinPriority,
+    std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority,
     std::shared_ptr<KVCacheEventManager> eventManager, bool enablePartialReuse, bool copyOnPartialReuse)
     : mMaxBeamWidth(maxBeamWidth)
     , mDataType(dtype)
@@ -1657,8 +1698,8 @@ KVCacheManager::KVCacheManager(std::vector<SizeType32> const& numKvHeadsPerLayer
     , mSinkBlockTokenLength(mSinkBubbleLength + sinkTokenLength)
     , mBlockManager(numKvHeadsPerLayer, sizePerHead, tokensPerBlock, blocksPerWindow, maxNumSequences,
           std::move(stream), maxSequenceLength, maxBeamWidth, maxAttentionWindowVec, tempAttentionWindowInputs, dtype,
-          mSinkBubbleLength, onboardBlocks, cacheType, secondaryOffloadMinPriority, std::move(eventManager),
-          enablePartialReuse, copyOnPartialReuse)
+          mSinkBubbleLength, onboardBlocks, cacheType, secondaryOffloadMinPriority, tertiaryOffloadMinPriority,
+          std::move(eventManager), enablePartialReuse, copyOnPartialReuse)
     // disable block reuse for sink bubble since chopVectorIntoBlocks does not match KV cache blocks in this case
     , mEnableBlockReuse{mSinkBubbleLength > 0 ? false : enableBlockReuse}
 {
@@ -1680,11 +1721,12 @@ KVCacheManager::KVCacheManager(SizeType32 numLayers, SizeType32 numKvHeads, Size
     SizeType32 sinkTokenLength, CudaStreamPtr stream, std::optional<runtime::SizeType32> maxSequenceLength,
     bool enableBlockReuse, bool onboardBlocks, CacheType cacheType,
     std::optional<executor::RetentionPriority> secondaryOffloadMinPriority,
+    std::optional<executor::RetentionPriority> tertiaryOffloadMinPriority,
     std::shared_ptr<KVCacheEventManager> eventManager, bool enablePartialReuse, bool copyOnPartialReuse)
     : KVCacheManager(std::vector<SizeType32>(numLayers, numKvHeads), sizePerHead, tokensPerBlock, blocksPerWindow,
         maxNumSequences, maxBeamWidth, maxAttentionWindowVec, tempAttentionWindowInputs, dtype, sinkTokenLength,
         std::move(stream), maxSequenceLength, enableBlockReuse, onboardBlocks, cacheType, secondaryOffloadMinPriority,
-        std::move(eventManager), enablePartialReuse, copyOnPartialReuse)
+        tertiaryOffloadMinPriority, std::move(eventManager), enablePartialReuse, copyOnPartialReuse)
 {
 }
 
@@ -2311,11 +2353,20 @@ BlocksPerWindow BaseKVCacheManager::calculateMaxNumBlocks(executor::KvCacheConfi
         return blocksInSecondaryPool;
     };
 
+    auto const calculateTertiaryBlocks
+        = [&](SizeType32 windowSize, float windowSizeShare, SizeType32 cacheSizeBytesPerToken)
+    {
+        // TODO: Add allottedTertiaryMemBytes parameter when implementing disk/tertiary memory allocation
+        // Totally missing!!! TODO: FIX THIS!!
+        return 0;
+    };
+
     auto const windowSizeToShare
         = BlockManager::calculateWindowSizeToShare(windowSizeToLayers, cacheSizeBytesPerTokenPerWindow);
 
     std::vector<SizeType32> blocksPrimary;
     std::vector<SizeType32> blocksSecondary;
+    std::vector<SizeType32> blocksTertiary;
     for (auto const& [windowSize, managedLayers] : windowSizeToLayers)
     {
         auto const cacheSizeBytesPerToken = cacheSizeBytesPerTokenPerWindow.at(windowSize);
@@ -2323,8 +2374,10 @@ BlocksPerWindow BaseKVCacheManager::calculateMaxNumBlocks(executor::KvCacheConfi
         auto const blocksInPrimaryPool = calculatePrimaryBlocks(windowSize, windowSizeShare, cacheSizeBytesPerToken);
         auto const blocksInSecondaryPool
             = calculateSecondaryBlocks(windowSize, windowSizeShare, cacheSizeBytesPerToken);
+        auto const blocksInTertiaryPool = calculateTertiaryBlocks(windowSize, windowSizeShare, cacheSizeBytesPerToken);
         blocksPrimary.push_back(blocksInPrimaryPool);
         blocksSecondary.push_back(blocksInSecondaryPool);
+        blocksTertiary.push_back(blocksInTertiaryPool);
     }
 
     std::vector<SizeType32> windowSizes;
@@ -2345,8 +2398,10 @@ BlocksPerWindow BaseKVCacheManager::calculateMaxNumBlocks(executor::KvCacheConfi
             "sizes for reference: %s",
             rank, vec2str(windowSizes).c_str());
         TLLM_LOG_DEBUG(
-            "[RANK %d] Before mpi::MpiOp::MIN reduction: window sizes %s / primary blocks %s / secondary blocks %s",
-            rank, vec2str(windowSizes).c_str(), vec2str(blocksPrimary).c_str(), vec2str(blocksSecondary).c_str());
+            "[RANK %d] Before mpi::MpiOp::MIN reduction: window sizes %s / primary blocks %s / secondary blocks %s / "
+            "tertiary blocks %s",
+            rank, vec2str(windowSizes).c_str(), vec2str(blocksPrimary).c_str(), vec2str(blocksSecondary).c_str(),
+            vec2str(blocksTertiary).c_str());
         // make sure all ranks use same value for max blocks
         auto blocksWorld = blocksPrimary;
         COMM_SESSION.allreduce(
@@ -2355,9 +2410,14 @@ BlocksPerWindow BaseKVCacheManager::calculateMaxNumBlocks(executor::KvCacheConfi
         COMM_SESSION.allreduce(
             blocksSecondary.data(), blocksWorld.data(), windowSizes.size(), mpi::MpiType::kINT32, mpi::MpiOp::MIN);
         blocksSecondary = blocksWorld;
+        COMM_SESSION.allreduce(
+            blocksTertiary.data(), blocksWorld.data(), windowSizes.size(), mpi::MpiType::kINT32, mpi::MpiOp::MIN);
+        blocksTertiary = blocksWorld;
         TLLM_LOG_DEBUG(
-            "[RANK %d] After mpi::MpiOp::MIN reduction: window sizes %s / primary blocks %s / secondary blocks %s",
-            rank, vec2str(windowSizes).c_str(), vec2str(blocksPrimary).c_str(), vec2str(blocksSecondary).c_str());
+            "[RANK %d] After mpi::MpiOp::MIN reduction: window sizes %s / primary blocks %s / secondary blocks %s / "
+            "tertiary blocks %s",
+            rank, vec2str(windowSizes).c_str(), vec2str(blocksPrimary).c_str(), vec2str(blocksSecondary).c_str(),
+            vec2str(blocksTertiary).c_str());
     }
 
     BlocksPerWindow windowSizeToBlocks;
@@ -2367,9 +2427,10 @@ BlocksPerWindow BaseKVCacheManager::calculateMaxNumBlocks(executor::KvCacheConfi
         auto const windowSize = windowSizes.at(i);
         auto const primaryBlocks = blocksPrimary.at(i);
         auto const secondayBlocks = blocksSecondary.at(i);
-        TLLM_LOG_INFO(
-            "[windowSize=%d] {.primaryBlocks=%d, .secondayBlocks=%d}", windowSize, primaryBlocks, secondayBlocks);
-        windowSizeToBlocks[windowSize] = {primaryBlocks, secondayBlocks};
+        auto const tertiaryBlocks = blocksTertiary.at(i);
+        TLLM_LOG_INFO("[windowSize=%d] {.primaryBlocks=%d, .secondayBlocks=%d, .tertiaryBlocks=%d}", windowSize,
+            primaryBlocks, secondayBlocks, tertiaryBlocks);
+        windowSizeToBlocks[windowSize] = {primaryBlocks, secondayBlocks, tertiaryBlocks};
     }
     return windowSizeToBlocks;
 }
