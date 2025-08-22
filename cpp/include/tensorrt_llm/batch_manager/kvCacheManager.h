@@ -76,6 +76,8 @@ using MmKey = std::pair<std::array<uint8_t, 32>, SizeType32>;
 template <typename T>
 using OptionalRef = tensorrt_llm::common::OptionalRef<T>;
 
+using BaseLoopbackAgent = tensorrt_llm::executor::kv_cache::BaseLoopbackAgent;
+
 struct TempAttentionWindowInputs
 {
     bool pagedContextFMHA;

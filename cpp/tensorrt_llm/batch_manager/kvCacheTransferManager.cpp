@@ -163,16 +163,16 @@ void KVCacheTransferManager::copyBlock(BlockPtr const& src, BlockPtr const& dst,
         return;
     }
 
-    std::vector<FileDesc> fileBlobs;
-    std::vector<MemoryDesc> memoryBlobs;
+    std::vector<kvc::FileDesc> fileBlobs;
+    std::vector<kvc::MemoryDesc> memoryBlobs;
 
     for (size_t poolIdx = 0; poolIdx < pools.size(); ++poolIdx)
     {
         auto ptr = isOffload ? computeBlockPointer(src, pools, poolIdx) : computeBlockPointer(dst, pools, poolIdx);
         auto block_id = src->getBlockId();
 
-        TLLM_CHECK_WITH_INFO(
-            directory.has_value() && directory.value() != "", "Expected a directory path for KVCache offload, but none was provided.");
+        TLLM_CHECK_WITH_INFO(directory.has_value() && directory.value() != "",
+            "Expected a directory path for KVCache offload, but none was provided.");
 
         int size = std::snprintf(nullptr, 0, "%s/block_%d_pool_%zu.bin", directory.value().c_str(), block_id, poolIdx);
 
@@ -186,13 +186,14 @@ void KVCacheTransferManager::copyBlock(BlockPtr const& src, BlockPtr const& dst,
         memoryBlobs.emplace_back(ptr->data(), ptr->getSizeInBytes(), mDeviceId);
     }
 
-    FileDescs fileDescs(fileBlobs);
-    MemoryDescs memoryDescs(kvc::MemoryType::kVRAM, memoryBlobs);
+    kvc::FileDescs fileDescs(std::move(fileBlobs));
+    kvc::MemoryDescs memoryDescs(kvc::MemoryType::kVRAM, std::move(memoryBlobs));
 
     mLoopbackAgent->registerMemory(memoryDescs);
     mLoopbackAgent->registerFiles(fileDescs);
 
-    std::unique_ptr<TransferStatus> status = mLoopbackAgent->submitLoopbackRequests(memoryDescs, fileDescs, isOffload);
+    std::unique_ptr<kvc::TransferStatus> status
+        = mLoopbackAgent->submitLoopbackRequests(memoryDescs, fileDescs, isOffload);
     status->wait();
 
     mLoopbackAgent->deregisterMemory(memoryDescs);

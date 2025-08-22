@@ -887,7 +887,7 @@ void WindowBlockManager::freeChildren(
 
 BlockPtr WindowBlockManager::getFreeBlock(executor::RetentionPriority priority,
     std::optional<std::chrono::milliseconds> durationMs, executor::KvCacheTransferMode mode,
-    std::optional<std::string> const& directory)
+    std::optional<std::string> directory)
 {
     // eviction policy get free primary block
     auto [block, canOffload] = mEvictionPolicy->getFreeBlock(kPrimaryLevel);
@@ -908,7 +908,7 @@ BlockPtr WindowBlockManager::getFreeBlock(executor::RetentionPriority priority,
         mEvictionPolicy->claimBlock(block);
         // Offload block in primary memory before repurposing
         auto offloadBlock = std::get<0>(mEvictionPolicy->getFreeBlock(kSecondaryLevel));
-        mTransferManager->offload(block, offloadBlock, mPools, 0, mode, directory, 0, mode, directory);
+        mTransferManager->offload(block, offloadBlock, mPools, 0, mode, directory);
         // swap linear block offsets (i.e. make block the offload block)
         block->swapMemoryPoolBlockOffset(offloadBlock);
 
@@ -961,13 +961,13 @@ void BlockManager::setOffsets(tk::KVCacheIndex* offsetsPtr, nvinfer1::Dims const
 }
 
 void BlockManager::onboardBlock(BlockPtr const& offloadBlock, SizeType32 windowSize, executor::KvCacheTransferMode mode,
-    std::optional<std::string> const& directory)
+    std::optional<std::string> directory)
 {
     mWindowBlockManagers.at(windowSize).onboardBlock(offloadBlock, mode, directory);
 }
 
 void WindowBlockManager::onboardBlock(
-    BlockPtr const& offloadBlock, executor::KvCacheTransferMode mode, std::optional<std::string> const& directory)
+    BlockPtr const& offloadBlock, executor::KvCacheTransferMode mode, std::optional<std::string> directory)
 {
     if (mOnboardBlocks && !offloadBlock->isPrimary())
     {
@@ -989,13 +989,13 @@ void WindowBlockManager::onboardBlock(
 }
 
 void BlockManager::offloadBlock(BlockPtr const& block, SizeType32 windowSize, executor::KvCacheTransferMode mode,
-    std::optional<std::string> const& directory)
+    std::optional<std::string> directory)
 {
     mWindowBlockManagers.at(windowSize).offloadBlock(block, mode, directory);
 }
 
 void WindowBlockManager::offloadBlock(
-    BlockPtr const& block, executor::KvCacheTransferMode mode, std::optional<std::string> const& directory)
+    BlockPtr const& block, executor::KvCacheTransferMode mode, std::optional<std::string> directory)
 {
     if (mOnboardBlocks && block->isPrimary())
     {
@@ -1058,7 +1058,7 @@ bool WindowBlockManager::blockInRadixTree(BlockPtr const& block)
 
 SizeType32 WindowBlockManager::loadOrAllocateBlocks(std::vector<BlockKey> const& blockKeys, SizeType32 numContextBlocks,
     GenerationRequest& sequence, std::vector<executor::RetentionPriorityAndDuration> const& perBlockRetentions,
-    executor::KvCacheTransferMode mode, std::optional<std::string> const& directory)
+    executor::KvCacheTransferMode mode, std::optional<std::string> directory)
 {
     SizeType32 numMatchedTokens{0};
     auto searchRoot = mCachedBlocksRoot;
