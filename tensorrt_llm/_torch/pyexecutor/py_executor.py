@@ -201,6 +201,7 @@ class PyExecutor:
         self.kv_cache_manager = self.resource_manager.resource_managers.get(
             ResourceManagerType.KV_CACHE_MANAGER)
         self.enable_kv_cache_events = self.kv_cache_manager is not None and self.kv_cache_manager.event_buffer_max_size > 0
+        self.enable_kv_cache_reuse = self.kv_cache_manager is not None and self.kv_cache_manager.enable_block_reuse
 
         self.max_input_len = max_input_len
         # _executor_loop private data
@@ -871,12 +872,11 @@ class PyExecutor:
                         self._remove_inflight_ids(previous_scheduled_batch)
                     self.micro_batches[prev_microbatch_id] = None
 
-                # Synchronize and apply request terminations across PP ranks
-                if self.dist.pp_size > 1:
-                    self._sync_termination(prev_microbatch_id)
-
                 if self.kv_cache_transceiver and self.ctx_in_transmission_requests:
                     self._terminate_ctx_finished_requests()
+                
+                if self.dist.pp_size > 1 and self.enable_kv_cache_reuse:
+                    self._sync_termination(prev_microbatch_id)
 
                 # march forward in microbatch slots
                 microbatch_id = (microbatch_id + 1) % self.num_micro_batches
@@ -1598,6 +1598,20 @@ class PyExecutor:
         self._enqueue_responses(error_responses.items())
 
     def _terminate_request(self, request: LlmRequest):
+        if self.dist.pp_size > 1 and self.enable_kv_cache_reuse:
+            req_key = request.py_request_id
+            self.local_termination[req_key] = request
+            state = self.pending_termination.get(req_key)
+            if state is None:
+                state = {'ready_to_terminate': [], 'terminated': []}
+                self.pending_termination[req_key] = state
+            if self.dist.rank not in state['ready_to_terminate']:
+                state['ready_to_terminate'].append(self.dist.rank)
+        else:
+            self._free_resources_for_request(request)
+    
+    def _free_resources_for_request(self, request: LlmRequest):
+        logger.debug(f"free resources for request {request.py_request_id}")
         self.resource_manager.free_resources(request)
 
     @nvtx_range("_handle_canceled_requests")
@@ -1716,17 +1730,7 @@ class PyExecutor:
         self.active_requests.extend(new_active_requests)
         self._enqueue_responses(new_responses)
         for request in requests_to_terminate:
-            if self.dist.pp_size > 1:
-                req_key = request.py_request_id
-                self.local_termination[req_key] = request
-                state = self.pending_termination.get(req_key)
-                if state is None:
-                    state = {'ready_to_terminate': [], 'terminated': []}
-                    self.pending_termination[req_key] = state
-                if self.dist.rank not in state['ready_to_terminate']:
-                    state['ready_to_terminate'].append(self.dist.rank)
-            else:
-                self._terminate_request(request)
+            self._terminate_request(request)
         return requests_to_terminate
 
     @nvtx_range("_terminate_ctx_finished_requests")
@@ -1762,11 +1766,11 @@ class PyExecutor:
             dest=self.dist.next_pp_rank,
             tag=microbatch_id,
         )
-
         remote_state = self.dist.recv_object(
             src=self.dist.prev_pp_rank,
             tag=microbatch_id,
         )
+        logger.debug(f"received remote state for microbatch {microbatch_id}, prev pp rank: {self.dist.prev_pp_rank} state {remote_state}")
 
         if remote_state:
             for req_id, state in remote_state.items():
@@ -1791,7 +1795,7 @@ class PyExecutor:
             if len(ready) >= self.dist.pp_size and self.dist.rank not in done:
                 local_req = self.local_termination.get(req_id)
                 if local_req is not None:
-                    self._terminate_request(local_req)
+                    self._free_resources_for_request(local_req)
                 done.append(self.dist.rank)
             if len(done) >= self.dist.pp_size:
                 to_delete.append(req_id)
